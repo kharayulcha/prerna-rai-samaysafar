@@ -1,7 +1,7 @@
 {
   "compilerOptions": {
     // Output & Root
-    "rootDir": "./src",
+    "rootDir": "./",
     "outDir": "./dist",
 
     // Module system (REQUIRED for ESM)
@@ -41,6 +41,6 @@
     "moduleDetection": "force"
   },
 
-  "include": ["src//*"],
+  "include": ["src/**/*"],
   "exclude": ["node_modules"]
 }

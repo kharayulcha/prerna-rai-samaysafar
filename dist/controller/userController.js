@@ -1,0 +1,491 @@
+import bcrypt from 'bcrypt';
+import jwt from 'jsonwebtoken';
+import prisma from '../model/index.js';
+import { sendOTPEmail } from '../utils/emailService.js';
+import { Prisma } from '@prisma/client';
+const JWT_SECRET = process.env.JWT_SECRET || 'samaysafar_secret_key';
+const OTP_EXPIRY_MINUTES = 10;
+// Helper function to generate OTP
+const generateOTP = () => {
+    return Math.floor(100000 + Math.random() * 900000).toString(); // 6-digit OTP
+};
+// Helper function to hash password
+const hashPassword = async (password) => {
+    return await bcrypt.hash(password, 10);
+};
+// Helper function to compare password
+const comparePassword = async (password, hashedPassword) => {
+    return await bcrypt.compare(password, hashedPassword);
+};
+// Helper function to generate JWT token
+const generateToken = (userId, role, orgId) => {
+    const payload = { userId, role };
+    if (orgId)
+        payload.orgId = orgId;
+    return jwt.sign(payload, JWT_SECRET, { expiresIn: '7d' });
+};
+/**
+ * Organization Registration
+ * Organization registers with name, email, phone, password
+ * Gets OTP code via email
+ * Address will be collected during OTP verification
+ */
+export const registerOrganization = async (req, res) => {
+    const { name, email, phone, password } = req.body;
+    // Validate required fields
+    if (!name || !email || !phone || !password) {
+        return res.status(400).json({
+            message: 'Missing required fields: name, email, phone, password'
+        });
+    }
+    // Validate password strength (optional - add your requirements)
+    if (password.length < 6) {
+        return res.status(400).json({
+            message: 'Password must be at least 6 characters long'
+        });
+    }
+    try {
+        // Check if organization already exists
+        const existingOrg = await prisma.organization.findUnique({
+            where: { Email: email },
+        });
+        if (existingOrg) {
+            return res.status(400).json({ message: 'Organization with this email already exists' });
+        }
+        // Check if there's a pending registration for this email
+        const pendingAdmin = await prisma.pendingAdmin.findUnique({
+            where: { Email: email },
+        });
+        if (pendingAdmin && !pendingAdmin.Verified) {
+            // Check if OTP is still valid
+            if (new Date() < pendingAdmin.OTPExpiresAt) {
+                return res.status(400).json({
+                    message: 'Registration already in progress. Please check your email for OTP or use resend OTP.'
+                });
+            }
+            // OTP expired, delete old record
+            await prisma.pendingAdmin.delete({
+                where: { PendingId: pendingAdmin.PendingId },
+            });
+        }
+        // Hash password
+        const passwordHash = await hashPassword(password);
+        // Generate OTP
+        const otpCode = generateOTP();
+        const expiresAt = new Date();
+        expiresAt.setMinutes(expiresAt.getMinutes() + OTP_EXPIRY_MINUTES);
+        // Create pending admin record (for organization registration)
+        await prisma.pendingAdmin.create({
+            data: {
+                Name: name,
+                Email: email,
+                Phone: phone,
+                PasswordHash: passwordHash,
+                OTP: otpCode,
+                OTPExpiresAt: expiresAt,
+                Verified: false,
+            },
+        });
+        // Send OTP via email
+        try {
+            await sendOTPEmail(email, otpCode, name);
+        }
+        catch (emailError) {
+            console.error('Error sending OTP email:', emailError);
+            // Delete the pending admin record if email fails
+            await prisma.pendingAdmin.deleteMany({
+                where: { Email: email },
+            });
+            return res.status(500).json({
+                message: 'Failed to send OTP email. Please try again.'
+            });
+        }
+        return res.status(201).json({
+            message: 'Registration initiated. Please check your email for the OTP verification code to complete registration.',
+            email: email,
+        });
+    }
+    catch (error) {
+        console.error('Error registering organization:', error);
+        if (error.code === 'P2002') {
+            return res.status(400).json({ message: 'Email already in use' });
+        }
+        return res.status(500).json({
+            message: 'Error registering organization',
+            error: error.message
+        });
+    }
+};
+/**
+ * Resend OTP for Organization Registration
+ */
+export const resendOrganizationOTP = async (req, res) => {
+    const { email } = req.body;
+    if (!email) {
+        return res.status(400).json({ message: 'Email is required' });
+    }
+    try {
+        // Check if organization already exists
+        const existingOrg = await prisma.organization.findUnique({
+            where: { Email: email },
+        });
+        if (existingOrg) {
+            return res.status(400).json({
+                message: 'Organization already registered. Please login instead.'
+            });
+        }
+        // Find pending registration
+        const pendingAdmin = await prisma.pendingAdmin.findUnique({
+            where: { Email: email },
+        });
+        if (!pendingAdmin) {
+            return res.status(404).json({
+                message: 'No pending registration found. Please register first.'
+            });
+        }
+        if (pendingAdmin.Verified) {
+            return res.status(400).json({
+                message: 'Organization already verified. Please login instead.'
+            });
+        }
+        // Generate new OTP
+        const otpCode = generateOTP();
+        const expiresAt = new Date();
+        expiresAt.setMinutes(expiresAt.getMinutes() + OTP_EXPIRY_MINUTES);
+        // Update pending admin with new OTP
+        await prisma.pendingAdmin.update({
+            where: { PendingId: pendingAdmin.PendingId },
+            data: {
+                OTP: otpCode,
+                OTPExpiresAt: expiresAt,
+            },
+        });
+        try {
+            await sendOTPEmail(email, otpCode, pendingAdmin.Name);
+            return res.status(200).json({
+                message: 'OTP has been resent to your email address.',
+            });
+        }
+        catch (emailError) {
+            console.error('Error sending OTP email:', emailError);
+            return res.status(500).json({
+                message: 'Failed to send OTP email. Please try again later.',
+            });
+        }
+    }
+    catch (error) {
+        console.error('Error resending OTP:', error);
+        return res.status(500).json({ message: 'Error resending OTP', error: error.message });
+    }
+};
+/**
+ * Verify OTP for Organization Registration
+ * After verification, organization is created in the database
+ */
+export const verifyOrganizationOTP = async (req, res) => {
+    const { email, code, address } = req.body;
+    if (!email || !code) {
+        return res.status(400).json({ message: 'Email and OTP code are required' });
+    }
+    if (!address) {
+        return res.status(400).json({ message: 'Address is required' });
+    }
+    try {
+        // Find pending admin record
+        const pendingAdmin = await prisma.pendingAdmin.findUnique({
+            where: { Email: email },
+        });
+        if (!pendingAdmin) {
+            return res.status(400).json({ message: 'No pending registration found' });
+        }
+        if (pendingAdmin.Verified) {
+            return res.status(400).json({ message: 'Organization already verified. Please login instead.' });
+        }
+        // Check if OTP matches and is not expired
+        if (pendingAdmin.OTP !== code) {
+            return res.status(400).json({ message: 'Invalid OTP code' });
+        }
+        if (new Date() > pendingAdmin.OTPExpiresAt) {
+            return res.status(400).json({ message: 'OTP has expired. Please request a new one.' });
+        }
+        // Check if organization already exists
+        const existingOrg = await prisma.organization.findUnique({
+            where: { Email: email },
+        });
+        if (existingOrg) {
+            // Mark as verified and delete pending record
+            await prisma.pendingAdmin.update({
+                where: { PendingId: pendingAdmin.PendingId },
+                data: { Verified: true },
+            });
+            return res.status(400).json({ message: 'Organization already exists' });
+        }
+        // Create organization in database
+        const organization = await prisma.organization.create({
+            data: {
+                Name: pendingAdmin.Name,
+                Email: pendingAdmin.Email,
+                Phone: pendingAdmin.Phone,
+                Address: address,
+            },
+        });
+        // Mark pending admin as verified
+        await prisma.pendingAdmin.update({
+            where: { PendingId: pendingAdmin.PendingId },
+            data: { Verified: true },
+        });
+        // Generate JWT token
+        const token = generateToken(organization.OrgId, 'organization', organization.OrgId);
+        return res.status(200).json({
+            message: 'OTP verified successfully. Organization account created.',
+            token,
+            organization: {
+                orgId: organization.OrgId,
+                name: organization.Name,
+                email: organization.Email,
+                phone: organization.Phone,
+                address: organization.Address,
+            },
+        });
+    }
+    catch (error) {
+        console.error('Error verifying OTP:', error);
+        if (error.code === 'P2002') {
+            return res.status(400).json({ message: 'Organization with this email already exists' });
+        }
+        return res.status(500).json({ message: 'Error verifying OTP', error: error.message });
+    }
+};
+/**
+ * Create User (Parent, Student, or Driver) by Organization
+ * Only organizations can create users
+ */
+export const createUser = async (req, res) => {
+    const { name, email, phone, password, role, profileImage } = req.body;
+    const orgId = req.orgId || req.body.orgId; // Assuming middleware sets orgId
+    // Validate required fields
+    if (!name || !email || !phone || !password || !role) {
+        return res.status(400).json({
+            message: 'Missing required fields: name, email, phone, password, role'
+        });
+    }
+    // Validate role
+    const validRoles = ['parent', 'student', 'driver'];
+    const userRole = role.toLowerCase();
+    if (!validRoles.includes(userRole)) {
+        return res.status(400).json({
+            message: 'Invalid role. Must be one of: parent, student, driver'
+        });
+    }
+    // Validate password strength
+    if (password.length < 6) {
+        return res.status(400).json({
+            message: 'Password must be at least 6 characters long'
+        });
+    }
+    // If orgId is not in request body, it should come from authenticated organization
+    if (!orgId) {
+        return res.status(400).json({
+            message: 'Organization ID is required. Please ensure you are authenticated as an organization.'
+        });
+    }
+    try {
+        // Verify organization exists
+        const organization = await prisma.organization.findUnique({
+            where: { OrgId: orgId },
+        });
+        if (!organization) {
+            return res.status(404).json({ message: 'Organization not found' });
+        }
+        // Check if user already exists
+        const existingUser = await prisma.users.findUnique({
+            where: { Email: email },
+        });
+        if (existingUser) {
+            return res.status(400).json({ message: 'User with this email already exists' });
+        }
+        // Hash password
+        const passwordHash = await hashPassword(password);
+        // Create user and credentials in a transaction
+        const result = await prisma.$transaction(async (tx) => {
+            // Create user
+            const user = await tx.users.create({
+                data: {
+                    OrgId: orgId,
+                    Role: userRole,
+                    Name: name,
+                    Email: email,
+                    Phone: phone,
+                    ProfileImage: profileImage || null,
+                },
+            });
+            // Create credentials
+            await tx.credentials.create({
+                data: {
+                    UserId: user.UserId,
+                    PasswordHash: passwordHash,
+                    MustChangePassword: false, // Organization sets password, so no need to change
+                    EmailSentAt: new Date(),
+                },
+            });
+            // Create audit record
+            // Note: AdminUserId must reference a Users record, not Organization
+            // Try to find an admin user for this organization, or skip audit if none exists
+            const adminUser = await tx.users.findFirst({
+                where: {
+                    OrgId: orgId,
+                    Role: 'admin', // Assuming there might be admin users
+                },
+            });
+            if (adminUser) {
+                await tx.userCreationAudit.create({
+                    data: {
+                        CreatedUserId: user.UserId,
+                        AdminUserId: adminUser.UserId,
+                        EmailSentAt: new Date(),
+                        DeliveryStatus: 'sent',
+                    },
+                });
+            }
+            else {
+                // If no admin user exists, we skip audit creation
+                // You may want to create an admin user for the organization or update the schema
+                console.warn('No admin user found for organization ${orgId}. Skipping audit creation.');
+            }
+            return user;
+        });
+        // Send welcome email with credentials (optional)
+        try {
+            await sendOTPEmail(email, password, name); // Reusing email service for welcome email
+        }
+        catch (emailError) {
+            console.error('Error sending welcome email:', emailError);
+            // Don't fail the request if email fails
+        }
+        return res.status(201).json({
+            message: '${userRole} created successfully',
+            user: {
+                userId: result.UserId,
+                name: result.Name,
+                email: result.Email,
+                phone: result.Phone,
+                role: result.Role,
+                orgId: result.OrgId,
+            },
+        });
+    }
+    catch (error) {
+        console.error('Error creating user:', error);
+        if (error.code === 'P2002') {
+            return res.status(400).json({ message: 'Email already in use' });
+        }
+        return res.status(500).json({
+            message: 'Error creating user',
+            error: error.message
+        });
+    }
+};
+/**
+ * Login for all user types (Organization, Parent, Student, Driver)
+ */
+export const login = async (req, res) => {
+    const { email, password, role } = req.body;
+    if (!email || !password) {
+        return res.status(400).json({ message: 'Email and password are required' });
+    }
+    try {
+        // Check if it's an organization login
+        if (role && role.toLowerCase() === 'organization') {
+            // Find organization
+            const organization = await prisma.organization.findUnique({
+                where: { Email: email },
+            });
+            if (!organization) {
+                return res.status(401).json({ message: 'Invalid email or password' });
+            }
+            // Check pending admin for password (since Organization doesn't have credentials table)
+            // You may need to add a credentials table for organizations or use PendingAdmin
+            const pendingAdmin = await prisma.pendingAdmin.findFirst({
+                where: {
+                    Email: email,
+                    Verified: true,
+                },
+                orderBy: {
+                    RequestedAt: 'desc',
+                },
+            });
+            if (!pendingAdmin) {
+                return res.status(401).json({ message: 'Invalid email or password' });
+            }
+            // Verify password
+            const isPasswordValid = await comparePassword(password, pendingAdmin.PasswordHash);
+            if (!isPasswordValid) {
+                return res.status(401).json({ message: 'Invalid email or password' });
+            }
+            // Generate JWT token
+            const token = generateToken(organization.OrgId, 'organization', organization.OrgId);
+            return res.status(200).json({
+                message: 'Login successful',
+                token,
+                organization: {
+                    orgId: organization.OrgId,
+                    name: organization.Name,
+                    email: organization.Email,
+                    phone: organization.Phone,
+                    address: organization.Address,
+                    role: 'organization',
+                },
+            });
+        }
+        // For other user types (parent, student, driver)
+        // Find user
+        const user = await prisma.users.findUnique({
+            where: { Email: email },
+            include: {
+                credentials: true,
+                organization: true,
+            },
+        });
+        if (!user) {
+            return res.status(401).json({ message: 'Invalid email or password' });
+        }
+        // Verify role if provided
+        if (role && user.Role.toLowerCase() !== role.toLowerCase()) {
+            return res.status(403).json({
+                message: 'Invalid role. This account is registered as ${user.Role}, not ${role}'
+            });
+        }
+        // Verify password
+        if (!user.credentials) {
+            return res.status(401).json({ message: 'Invalid email or password' });
+        }
+        const isPasswordValid = await comparePassword(password, user.credentials.PasswordHash);
+        if (!isPasswordValid) {
+            return res.status(401).json({ message: 'Invalid email or password' });
+        }
+        // Generate JWT token
+        const token = generateToken(user.UserId, user.Role, user.OrgId || undefined);
+        return res.status(200).json({
+            message: 'Login successful',
+            token,
+            user: {
+                userId: user.UserId,
+                name: user.Name,
+                email: user.Email,
+                phone: user.Phone,
+                role: user.Role,
+                orgId: user.OrgId,
+                profileImage: user.ProfileImage,
+                organization: user.organization ? {
+                    orgId: user.organization.OrgId,
+                    name: user.organization.Name,
+                } : null,
+            },
+        });
+    }
+    catch (error) {
+        console.error('Error during login:', error);
+        return res.status(500).json({ message: 'Error during login', error: error.message });
+    }
+};
+//# sourceMappingURL=userController.js.map

@@ -1,0 +1,203 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Organization {
+  OrgId    Int     @id @default(autoincrement())
+  Name     String
+  Email    String  @unique
+  Phone    String
+  Address  String
+
+  users  Users[]
+  buses  Bus[]
+  routes Route[]
+  bills  Bill[]
+}
+
+model Users {
+  UserId       Int      @id @default(autoincrement())
+  OrgId        Int?
+  Role         String
+  Name         String
+  Email        String   @unique
+  Phone        String
+  ProfileImage String?
+
+  organization   Organization? @relation(fields: [OrgId], references: [OrgId])
+  credentials    Credentials?
+  notifications  Notification[]
+
+  driverRoutes   RouteDriverAssignment[]
+  payments       Payment[]
+  bills          Bill[] @relation("BillParent")
+  students       Bill[] @relation("BillStudent")
+
+  createdAudits  UserCreationAudit[] @relation("CreatedUser")
+  adminAudits    UserCreationAudit[] @relation("AdminCreator")
+
+  // ADD THIS LINE ↓↓↓
+  trips          Trip[] @relation("TripDriver")
+}
+
+model PendingAdmin {
+  PendingId     Int      @id @default(autoincrement())
+  Name          String
+  Email         String   @unique
+  Phone         String
+  PasswordHash  String
+  OTP           String
+  OTPExpiresAt  DateTime
+  RequestedAt   DateTime @default(now())
+  Verified      Boolean  @default(false)
+}
+
+model Credentials {
+  CredentialId        Int      @id @default(autoincrement())
+  UserId              Int      @unique
+  PasswordHash        String
+  PasswordGeneratedAt DateTime @default(now())
+  MustChangePassword  Boolean  @default(true)
+  EmailSentAt         DateTime?
+
+  user Users @relation(fields: [UserId], references: [UserId])
+}
+
+model Notification {
+  NotificationId Int      @id @default(autoincrement())
+  UserId         Int
+  Type           String
+  Message        String
+  TripId         Int?
+  Read           Boolean @default(false)
+
+  user Users @relation(fields: [UserId], references: [UserId])
+  trip Trip? @relation(fields: [TripId], references: [TripId])
+}
+
+model Bus {
+  BusId     Int    @id @default(autoincrement())
+  OrgId     Int
+  BusNumber String
+  Model     String
+
+  organization      Organization       @relation(fields: [OrgId], references: [OrgId])
+  routeAssignments  RouteBusAssignment[]
+  trips             Trip[]
+}
+
+model Route {
+  RouteId      Int    @id @default(autoincrement())
+  OrgId        Int
+  Name         String
+  Description  String?
+  ScheduleDays String
+  StartTime    String
+
+  organization      Organization          @relation(fields: [OrgId], references: [OrgId])
+  driverAssignments RouteDriverAssignment[]
+  busAssignments    RouteBusAssignment[]
+  trips             Trip[]
+
+  // has bills; Bill now links back with RouteId
+  bills Bill[]
+}
+
+model RouteDriverAssignment {
+  AssignmentId Int      @id @default(autoincrement())
+  RouteId      Int
+  DriverId     Int
+  AssignedAt   DateTime @default(now())
+  Status       String   @default("active")
+
+  route  Route @relation(fields: [RouteId], references: [RouteId])
+  driver Users @relation(fields: [DriverId], references: [UserId])
+}
+
+model RouteBusAssignment {
+  AssignmentId Int      @id @default(autoincrement())
+  RouteId      Int
+  BusId        Int
+  AssignedAt   DateTime @default(now())
+  Status       String   @default("active")
+
+  route Route @relation(fields: [RouteId], references: [RouteId])
+  bus   Bus   @relation(fields: [BusId], references: [BusId])
+}
+
+model Trip {
+  TripId    Int      @id @default(autoincrement())
+  RouteId   Int
+  BusId     Int
+  DriverId  Int
+  StartTime DateTime
+  EndTime   DateTime?
+  Status    String
+
+  route         Route @relation(fields: [RouteId], references: [RouteId])
+  bus           Bus   @relation(fields: [BusId], references: [BusId])
+  driver        Users @relation("TripDriver", fields: [DriverId], references: [UserId])
+  locations     Location[]
+  notifications Notification[]
+}
+
+model Location {
+  LocationId Int     @id @default(autoincrement())
+  TripId     Int
+  Latitude   Float
+  Longitude  Float
+
+  trip Trip @relation(fields: [TripId], references: [TripId])
+}
+
+model Bill {
+  BillId      Int      @id @default(autoincrement())
+  OrgId       Int
+  StudentId   Int
+  ParentId    Int
+  Amount      Float
+  PeriodStart DateTime
+  PeriodEnd   DateTime
+  GeneratedAt DateTime @default(now())
+  DueDate     DateTime
+  Status      String
+
+  RouteId Int?
+  route   Route? @relation(fields: [RouteId], references: [RouteId])
+
+  organization Organization @relation(fields: [OrgId], references: [OrgId])
+  student      Users        @relation("BillStudent", fields: [StudentId], references: [UserId])
+  parent       Users        @relation("BillParent", fields: [ParentId], references: [UserId])
+
+  payments Payment[]
+}
+
+model Payment {
+  PaymentId Int     @id @default(autoincrement())
+  BillId    Int
+  ParentId  Int
+  Amount    Float
+  Provider  String
+  Status    String
+  PaidAt    DateTime?
+
+  bill   Bill  @relation(fields: [BillId], references: [BillId])
+  parent Users @relation(fields: [ParentId], references: [UserId])
+}
+
+model UserCreationAudit {
+  AuditId       Int      @id @default(autoincrement())
+  CreatedUserId Int
+  AdminUserId   Int
+  CreatedAt     DateTime @default(now())
+  EmailSentAt   DateTime?
+  DeliveryStatus String  @default("sent")
+
+  createdUser Users @relation("CreatedUser", fields: [CreatedUserId], references: [UserId])
+  adminUser   Users @relation("AdminCreator", fields: [AdminUserId], references: [UserId])
+}

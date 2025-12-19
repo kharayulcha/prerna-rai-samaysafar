@@ -1,0 +1,18 @@
+version: "3.8"
+
+services:
+  postgres:
+    container_name: samaysafar-db
+    image: postgres:15
+    restart: always
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    environment:
+      POSTGRES_USER: prerna
+      POSTGRES_PASSWORD: 1234
+      POSTGRES_DB: samaysafar
+
+volumes:
+  postgres_data:
