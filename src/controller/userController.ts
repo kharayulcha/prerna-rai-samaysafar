@@ -572,3 +572,239 @@ export const login = async (req: Request, res: Response) => {
     return res.status(500).json({ message: 'Error during login', error: error.message });
   }
 };
+
+
+
+/**
+ * Forgot Password - Request OTP
+ * User provides email, receives OTP code via email
+ */
+export const forgotPassword = async (req: Request, res: Response) => {
+  const { email } = req.body;
+
+  if (!email) {
+    return res.status(400).json({ message: 'Email is required' });
+  }
+
+  try {
+    // Check if user exists (either in Users table or Organization table)
+    const user = await prisma.users.findUnique({
+      where: { Email: email },
+      include: { credentials: true },
+    });
+
+    const organization = await prisma.organization.findUnique({
+      where: { Email: email },
+    });
+
+    if (!user && !organization) {
+      // Don't reveal if email exists or not for security
+      return res.status(200).json({
+        message: 'If an account with this email exists, a password reset OTP has been sent.',
+      });
+    }
+
+    // Determine user name and type
+    const userName = user ? user.Name : organization?.Name || 'User';
+    const userId = user ? user.UserId : null;
+
+    // Check if there's an existing unused password reset request
+    const existingReset = await prisma.passwordReset.findFirst({
+      where: {
+        Email: email,
+        Used: false,
+        OTPExpiresAt: { gt: new Date() },
+      },
+      orderBy: {
+        RequestedAt: 'desc',
+      },
+    });
+
+    // Generate OTP
+    const otpCode = generateOTP();
+    const expiresAt = new Date();
+    expiresAt.setMinutes(expiresAt.getMinutes() + OTP_EXPIRY_MINUTES);
+
+    if (existingReset) {
+      // Update existing reset request with new OTP
+      await prisma.passwordReset.update({
+        where: { ResetId: existingReset.ResetId },
+        data: {
+          OTP: otpCode,
+          OTPExpiresAt: expiresAt,
+          RequestedAt: new Date(),
+        },
+      });
+    } else {
+      // Create new password reset request
+      await prisma.passwordReset.create({
+        data: {
+          Email: email,
+          OTP: otpCode,
+          OTPExpiresAt: expiresAt,
+        },
+      });
+    }
+
+    // Send OTP via email
+    try {
+      await sendPasswordResetOTPEmail(email, otpCode, userName);
+      return res.status(200).json({
+        message: 'If an account with this email exists, a password reset OTP has been sent to your email address.',
+      });
+    } catch (emailError: any) {
+      console.error('Error sending password reset OTP email:', emailError);
+      // Delete the password reset record if email fails
+      await prisma.passwordReset.deleteMany({
+        where: { Email: email, Used: false },
+      });
+      return res.status(500).json({
+        message: 'Failed to send password reset OTP email. Please try again.',
+      });
+    }
+  } catch (error: any) {
+    console.error('Error in forgot password:', error);
+    return res.status(500).json({
+      message: 'Error processing password reset request',
+      error: error.message,
+    });
+  }
+};
+
+/**
+ * Reset Password - Verify OTP and Update Password
+ * User provides email, OTP code, and new password
+ */
+export const resetPassword = async (req: Request, res: Response) => {
+  const { email, code, newPassword } = req.body;
+
+  if (!email || !code || !newPassword) {
+    return res.status(400).json({
+      message: 'Email, OTP code, and new password are required',
+    });
+  }
+
+  // Validate password strength
+  if (newPassword.length < 6) {
+    return res.status(400).json({
+      message: 'Password must be at least 6 characters long',
+    });
+  }
+
+  try {
+    // Find password reset request
+    const passwordReset = await prisma.passwordReset.findFirst({
+      where: {
+        Email: email,
+        Used: false,
+      },
+      orderBy: {
+        RequestedAt: 'desc',
+      },
+    });
+
+    if (!passwordReset) {
+      return res.status(400).json({
+        message: 'No password reset request found. Please request a new OTP.',
+      });
+    }
+
+    // Check if OTP matches
+    if (passwordReset.OTP !== code) {
+      return res.status(400).json({
+        message: 'Invalid OTP code',
+      });
+    }
+
+    // Check if OTP is expired
+    if (new Date() > passwordReset.OTPExpiresAt) {
+      return res.status(400).json({
+        message: 'OTP has expired. Please request a new one.',
+      });
+    }
+
+    // Hash new password
+    const passwordHash = await hashPassword(newPassword);
+
+    // Update password in transaction
+    await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+      // Check if user exists in Users table
+      const user = await tx.users.findUnique({
+        where: { Email: email },
+        include: { credentials: true },
+      });
+
+      if (user) {
+        // Update user credentials
+        if (user.credentials) {
+          await tx.credentials.update({
+            where: { UserId: user.UserId },
+            data: {
+              PasswordHash: passwordHash,
+              PasswordGeneratedAt: new Date(),
+              MustChangePassword: false,
+            },
+          });
+        } else {
+          // Create credentials if they don't exist
+          await tx.credentials.create({
+            data: {
+              UserId: user.UserId,
+              PasswordHash: passwordHash,
+              MustChangePassword: false,
+            },
+          });
+        }
+      } else {
+        // Check if it's an organization
+        const organization = await tx.organization.findUnique({
+          where: { Email: email },
+        });
+
+        if (organization) {
+          // For organizations, update the PendingAdmin record
+          const pendingAdmin = await tx.pendingAdmin.findFirst({
+            where: {
+              Email: email,
+              Verified: true,
+            },
+            orderBy: {
+              RequestedAt: 'desc',
+            },
+          });
+
+          if (pendingAdmin) {
+            await tx.pendingAdmin.update({
+              where: { PendingId: pendingAdmin.PendingId },
+              data: {
+                PasswordHash: passwordHash,
+              },
+            });
+          } else {
+            // If no pending admin found, we need to handle this case
+            // For now, we'll throw an error
+            throw new Error('Organization password reset requires existing verified admin record');
+          }
+        } else {
+          throw new Error('User or organization not found');
+        }
+      }
+
+      // Mark password reset as used
+      await tx.passwordReset.update({
+        where: { ResetId: passwordReset.ResetId },
+        data: { Used: true },
+      });
+    });
+
+    return res.status(200).json({
+      message: 'Password has been reset successfully. You can now login with your new password.',
+    });
+  } catch (error: any) {
+    console.error('Error resetting password:', error);
+    return res.status(500).json({
+      message: 'Error resetting password',
+      error: error.message,
+    });
+  }
+};
