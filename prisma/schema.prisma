@@ -13,6 +13,7 @@ model Organization {
   Email    String  @unique
   Phone    String
   Address  String
+  Logo     Bytes?
 
   users  Users[]
   buses  Bus[]
@@ -51,6 +52,8 @@ model PendingAdmin {
   Email         String   @unique
   Phone         String
   PasswordHash  String
+  Address       String?
+  Logo          Bytes?
   OTP           String
   OTPExpiresAt  DateTime
   RequestedAt   DateTime @default(now())
@@ -200,4 +203,15 @@ model UserCreationAudit {
 
   createdUser Users @relation("CreatedUser", fields: [CreatedUserId], references: [UserId])
   adminUser   Users @relation("AdminCreator", fields: [AdminUserId], references: [UserId])
+}
+
+model PasswordReset {
+  ResetId      Int      @id @default(autoincrement())
+  Email        String
+  OTP          String
+  OTPExpiresAt DateTime
+  RequestedAt  DateTime @default(now())
+  Used         Boolean  @default(false)
+
+  @@index([Email])
 }
