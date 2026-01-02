@@ -326,4 +326,152 @@ export const verifyOrganizationOTP = async (req: Request, res: Response) => {
     return res.status(500).json({ message: 'Error verifying OTP', error: error.message });
   }
 };
+/**
+ * Create User (Parent, Student, or Driver) by Organization
+ * Only organizations can create users
+ */
+export const createUser = async (req: Request, res: Response) => {
+  const { name, email, phone, password, role, profileImage } = req.body;
+  const orgId = (req as any).orgId || req.body.orgId; // Assuming middleware sets orgId
+
+  // Validate required fields
+  if (!name || !email || !phone || !password || !role) {
+    return res.status(400).json({ 
+      message: 'Missing required fields: name, email, phone, password, role' 
+    });
+}
+
+  // Validate role
+const validRoles = ['parent', 'student', 'driver'];
+const userRole = role.toLowerCase();
+if (!validRoles.includes(userRole)) {
+    return res.status(400).json({ 
+    message: 'Invalid role. Must be one of: parent, student, driver' 
+    });
+}
+
+  // Validate password strength
+if (password.length < 6) {
+    return res.status(400).json({ 
+    message: 'Password must be at least 6 characters long' 
+    });
+}
+
+  // If orgId is not in request body, it should come from authenticated organization
+if (!orgId) {
+    return res.status(400).json({ 
+    message: 'Organization ID is required. Please ensure you are authenticated as an organization.' 
+    });
+}
+
+try {
+    // Verify organization exists
+    const organization = await prisma.organization.findUnique({
+    where: { OrgId: orgId },
+    });
+
+    if (!organization) {
+      return res.status(404).json({ message: 'Organization not found' });
+    }
+
+    // Check if user already exists
+    const existingUser = await prisma.users.findUnique({
+      where: { Email: email },
+    });
+
+    if (existingUser) {
+      return res.status(400).json({ message: 'User with this email already exists' });
+    }
+
+    // Hash password
+    const passwordHash = await hashPassword(password);
+
+    // Create user and credentials in a transaction
+    const result = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+      // Create user
+      const user = await tx.users.create({
+        data: {
+          OrgId: orgId,
+          Role: userRole,
+          Name: name,
+          Email: email,
+          Phone: phone,
+          ProfileImage: profileImage || null,
+        },
+      });
+
+      // Create credentials
+      await tx.credentials.create({
+        data: {
+          UserId: user.UserId,
+          PasswordHash: passwordHash,
+          MustChangePassword: false, // Organization sets password, so no need to change
+          EmailSentAt: new Date(),
+        },
+      });
+
+      // Create audit record
+      // Note: AdminUserId must reference a Users record, not Organization
+      // Try to find an admin user for this organization, or skip audit if none exists
+      const adminUser = await tx.users.findFirst({
+        where: {
+          OrgId: orgId,
+          Role: 'admin', // Assuming there might be admin users
+        },
+      });
+
+      if (adminUser) {
+        await tx.userCreationAudit.create({
+          data: {
+            CreatedUserId: user.UserId,
+            AdminUserId: adminUser.UserId,
+            EmailSentAt: new Date(),
+            DeliveryStatus: 'sent',
+          },
+        });
+      } else {
+        // If no admin user exists, we skip audit creation
+        // You may want to create an admin user for the organization or update the schema
+        console.warn('No admin user found for organization ${orgId}. Skipping audit creation.');
+      }
+
+      return user;
+    });
+
+    // Send welcome email with permanent credentials (optional)
+    try {
+      await sendUserCredentialsEmail(
+        email,
+        password,
+        name,
+        organization.Name,
+        userRole
+      );
+    } catch (emailError) {
+      console.error('Error sending welcome email with credentials:', emailError);
+      // Don't fail the request if email fails
+    }
+
+    return res.status(201).json({
+      message: '${userRole} created successfully',
+      user: {
+        userId: result.UserId,
+        name: result.Name,
+        email: result.Email,
+        phone: result.Phone,
+        role: result.Role,
+        orgId: result.OrgId,
+      },
+    });
+  } catch (error: any) {
+    console.error('Error creating user:', error);
+    if (error.code === 'P2002') {
+      return res.status(400).json({ message: 'Email already in use' });
+    }
+    return res.status(500).json({ 
+      message: 'Error creating user', 
+      error: error.message 
+    });
+  }
+};
 
