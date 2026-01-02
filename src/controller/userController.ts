@@ -2,7 +2,7 @@ import bcrypt from 'bcrypt';
 import type { Request, Response } from 'express';
 import jwt from 'jsonwebtoken';
 import prisma from '../model/index.js';
-import { sendOTPEmail } from '../utils/emailService.js';
+import { sendOTPEmail, sendUserCredentialsEmail, sendPasswordResetOTPEmail } from '../utils/emailService.js';
 import { Prisma } from '../../generated/prisma/client.js';
 
 
@@ -33,17 +33,17 @@ const generateToken = (userId: number, role: string, orgId?: number): string => 
 
 /**
  * Organization Registration
- * Organization registers with name, email, phone, password
+ * Organization registers with name, email, phone, password, address and logo
  * Gets OTP code via email
- * Address will be collected during OTP verification
  */
 export const registerOrganization = async (req: Request, res: Response) => {
-  const { name, email, phone, password } = req.body;
+  const { name, email, phone, password, address } = req.body;
+  const logoFile = (req as any).file as any;
 
   // Validate required fields
-  if (!name || !email || !phone || !password) {
+  if (!name || !email || !phone || !password || !address) {
     return res.status(400).json({ 
-      message: 'Missing required fields: name, email, phone, password' 
+      message: 'Missing required fields: name, email, phone, password, address' 
     });
   }
 
@@ -97,6 +97,8 @@ export const registerOrganization = async (req: Request, res: Response) => {
         Email: email,
         Phone: phone,
         PasswordHash: passwordHash,
+        Address: address,
+        Logo: logoFile ? logoFile.buffer : null,
         OTP: otpCode,
         OTPExpiresAt: expiresAt,
         Verified: false,
@@ -207,14 +209,10 @@ export const resendOrganizationOTP = async (req: Request, res: Response) => {
  * After verification, organization is created in the database
  */
 export const verifyOrganizationOTP = async (req: Request, res: Response) => {
-  const { email, code, address } = req.body;
+  const { email, code } = req.body;
 
   if (!email || !code) {
     return res.status(400).json({ message: 'Email and OTP code are required' });
-  }
-
-  if (!address) {
-    return res.status(400).json({ message: 'Address is required' });
   }
 
   try {
@@ -254,20 +252,56 @@ export const verifyOrganizationOTP = async (req: Request, res: Response) => {
       return res.status(400).json({ message: 'Organization already exists' });
     }
 
-    // Create organization in database
-    const organization = await prisma.organization.create({
-      data: {
-        Name: pendingAdmin.Name,
-        Email: pendingAdmin.Email,
-        Phone: pendingAdmin.Phone,
-        Address: address,
-      },
+    // Check if an admin user already exists for this email
+    const existingUser = await prisma.users.findUnique({
+      where: { Email: pendingAdmin.Email },
     });
 
-    // Mark pending admin as verified
-    await prisma.pendingAdmin.update({
-      where: { PendingId: pendingAdmin.PendingId },
-      data: { Verified: true },
+    if (existingUser) {
+      return res.status(400).json({ message: 'Admin user with this email already exists' });
+    }
+
+    // Create organization and admin user in a single transaction
+    const { organization } = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+      // Create organization in database
+      const organization = await tx.organization.create({
+        data: {
+          Name: pendingAdmin.Name,
+          Email: pendingAdmin.Email,
+          Phone: pendingAdmin.Phone,
+          Address: pendingAdmin.Address || '',
+          Logo: pendingAdmin.Logo ?? null,
+        },
+      });
+
+      // Create the admin user for this organization
+      const adminUser = await tx.users.create({
+        data: {
+          OrgId: organization.OrgId,
+          Role: 'admin',
+          Name: pendingAdmin.Name,
+          Email: pendingAdmin.Email,
+          Phone: pendingAdmin.Phone,
+        },
+      });
+
+      // Store credentials for the new admin using the original hashed password
+      await tx.credentials.create({
+        data: {
+          UserId: adminUser.UserId,
+          PasswordHash: pendingAdmin.PasswordHash,
+          MustChangePassword: false,
+          EmailSentAt: new Date(),
+        },
+      });
+
+      // Mark pending admin as verified
+      await tx.pendingAdmin.update({
+        where: { PendingId: pendingAdmin.PendingId },
+        data: { Verified: true },
+      });
+
+      return { organization };
     });
 
     // Generate JWT token
@@ -293,263 +327,3 @@ export const verifyOrganizationOTP = async (req: Request, res: Response) => {
   }
 };
 
-/**
- * Create User (Parent, Student, or Driver) by Organization
- * Only organizations can create users
- */
-export const createUser = async (req: Request, res: Response) => {
-  const { name, email, phone, password, role, profileImage } = req.body;
-  const orgId = (req as any).orgId || req.body.orgId; // Assuming middleware sets orgId
-
-  // Validate required fields
-  if (!name || !email || !phone || !password || !role) {
-    return res.status(400).json({ 
-      message: 'Missing required fields: name, email, phone, password, role' 
-    });
-}
-
-  // Validate role
-const validRoles = ['parent', 'student', 'driver'];
-const userRole = role.toLowerCase();
-if (!validRoles.includes(userRole)) {
-    return res.status(400).json({ 
-    message: 'Invalid role. Must be one of: parent, student, driver' 
-    });
-}
-
-  // Validate password strength
-if (password.length < 6) {
-    return res.status(400).json({ 
-    message: 'Password must be at least 6 characters long' 
-    });
-}
-
-  // If orgId is not in request body, it should come from authenticated organization
-if (!orgId) {
-    return res.status(400).json({ 
-    message: 'Organization ID is required. Please ensure you are authenticated as an organization.' 
-    });
-}
-
-try {
-    // Verify organization exists
-    const organization = await prisma.organization.findUnique({
-    where: { OrgId: orgId },
-    });
-
-    if (!organization) {
-      return res.status(404).json({ message: 'Organization not found' });
-    }
-
-    // Check if user already exists
-    const existingUser = await prisma.users.findUnique({
-      where: { Email: email },
-    });
-
-    if (existingUser) {
-      return res.status(400).json({ message: 'User with this email already exists' });
-    }
-
-    // Hash password
-    const passwordHash = await hashPassword(password);
-
-    // Create user and credentials in a transaction
-    const result = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
-      // Create user
-      const user = await tx.users.create({
-        data: {
-          OrgId: orgId,
-          Role: userRole,
-          Name: name,
-          Email: email,
-          Phone: phone,
-          ProfileImage: profileImage || null,
-        },
-      });
-
-      // Create credentials
-      await tx.credentials.create({
-        data: {
-          UserId: user.UserId,
-          PasswordHash: passwordHash,
-          MustChangePassword: false, // Organization sets password, so no need to change
-          EmailSentAt: new Date(),
-        },
-      });
-
-      // Create audit record
-      // Note: AdminUserId must reference a Users record, not Organization
-      // Try to find an admin user for this organization, or skip audit if none exists
-      const adminUser = await tx.users.findFirst({
-        where: {
-          OrgId: orgId,
-          Role: 'admin', // Assuming there might be admin users
-        },
-      });
-
-      if (adminUser) {
-        await tx.userCreationAudit.create({
-          data: {
-            CreatedUserId: user.UserId,
-            AdminUserId: adminUser.UserId,
-            EmailSentAt: new Date(),
-            DeliveryStatus: 'sent',
-          },
-        });
-      } else {
-        // If no admin user exists, we skip audit creation
-        // You may want to create an admin user for the organization or update the schema
-        console.warn('No admin user found for organization ${orgId}. Skipping audit creation.');
-      }
-
-      return user;
-    });
-
-    // Send welcome email with credentials (optional)
-    try {
-      await sendOTPEmail(email, password, name); // Reusing email service for welcome email
-    } catch (emailError) {
-      console.error('Error sending welcome email:', emailError);
-      // Don't fail the request if email fails
-    }
-
-    return res.status(201).json({
-      message: '${userRole} created successfully',
-      user: {
-        userId: result.UserId,
-        name: result.Name,
-        email: result.Email,
-        phone: result.Phone,
-        role: result.Role,
-        orgId: result.OrgId,
-      },
-    });
-  } catch (error: any) {
-    console.error('Error creating user:', error);
-    if (error.code === 'P2002') {
-      return res.status(400).json({ message: 'Email already in use' });
-    }
-    return res.status(500).json({ 
-      message: 'Error creating user', 
-      error: error.message 
-    });
-  }
-};
-
-/**
- * Login for all user types (Organization, Parent, Student, Driver)
- */
-export const login = async (req: Request, res: Response) => {
-  const { email, password, role } = req.body;
-
-  if (!email || !password) {
-    return res.status(400).json({ message: 'Email and password are required' });
-  }
-
-  try {
-    // Check if it's an organization login
-    if (role && role.toLowerCase() === 'organization') {
-      // Find organization
-      const organization = await prisma.organization.findUnique({
-        where: { Email: email },
-      });
-
-      if (!organization) {
-        return res.status(401).json({ message: 'Invalid email or password' });
-      }
-
-      // Check pending admin for password (since Organization doesn't have credentials table)
-      // You may need to add a credentials table for organizations or use PendingAdmin
-      const pendingAdmin = await prisma.pendingAdmin.findFirst({
-        where: {
-          Email: email,
-          Verified: true,
-        },
-        orderBy: {
-          RequestedAt: 'desc',
-        },
-      });
-
-      if (!pendingAdmin) {
-        return res.status(401).json({ message: 'Invalid email or password' });
-      }
-
-      // Verify password
-      const isPasswordValid = await comparePassword(password, pendingAdmin.PasswordHash);
-      if (!isPasswordValid) {
-        return res.status(401).json({ message: 'Invalid email or password' });
-      }
-
-      // Generate JWT token
-      const token = generateToken(organization.OrgId, 'organization', organization.OrgId);
-
-      return res.status(200).json({
-        message: 'Login successful',
-        token,
-        organization: {
-          orgId: organization.OrgId,
-          name: organization.Name,
-          email: organization.Email,
-          phone: organization.Phone,
-          address: organization.Address,
-          role: 'organization',
-        },
-      });
-    }
-
-    // For other user types (parent, student, driver)
-    // Find user
-    const user = await prisma.users.findUnique({
-      where: { Email: email },
-      include: {
-        credentials: true,
-        organization: true,
-      },
-    });
-
-    if (!user) {
-      return res.status(401).json({ message: 'Invalid email or password' });
-    }
-
-    // Verify role if provided
-    if (role && user.Role.toLowerCase() !== role.toLowerCase()) {
-      return res.status(403).json({ 
-        message: 'Invalid role. This account is registered as ${user.Role}, not ${role}' 
-      });
-    }
-
-    // Verify password
-    if (!user.credentials) {
-      return res.status(401).json({ message: 'Invalid email or password' });
-    }
-
-    const isPasswordValid = await comparePassword(password, user.credentials.PasswordHash);
-    if (!isPasswordValid) {
-      return res.status(401).json({ message: 'Invalid email or password' });
-    }
-
-    // Generate JWT token
-    const token = generateToken(user.UserId, user.Role, user.OrgId || undefined);
-
-    return res.status(200).json({
-      message: 'Login successful',
-      token,
-      user: {
-        userId: user.UserId,
-        name: user.Name,
-        email: user.Email,
-        phone: user.Phone,
-        role: user.Role,
-        orgId: user.OrgId,
-        profileImage: user.ProfileImage,
-        organization: user.organization ? {
-          orgId: user.organization.OrgId,
-          name: user.organization.Name,
-        } : null,
-      },
-    });
-  } catch (error: any) {
-    console.error('Error during login:', error);
-    return res.status(500).json({ message: 'Error during login', error: error.message });
-  }
-};
