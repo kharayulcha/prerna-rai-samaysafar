@@ -475,3 +475,100 @@ try {
   }
 };
 
+/**
+ * Login for all user types (Organization, Parent, Student, Driver)
+ */
+export const login = async (req: Request, res: Response) => {
+  const { email, password } = req.body;
+
+  if (!email || !password) {
+    return res.status(400).json({ message: 'Email and password are required' });
+  }
+
+  try {
+    // 1. Try to login as a regular user (parent, student, driver, admin)
+    const user = await prisma.users.findUnique({
+      where: { Email: email },
+      include: {
+        credentials: true,
+        organization: true,
+      },
+    });
+
+    if (user && user.credentials) {
+      const isPasswordValid = await comparePassword(password, user.credentials.PasswordHash);
+      if (isPasswordValid) {
+        // Successful user login
+        const token = generateToken(user.UserId, user.Role, user.OrgId || undefined);
+
+        return res.status(200).json({
+          message: 'Login successful',
+          token,
+          user: {
+            userId: user.UserId,
+            name: user.Name,
+            email: user.Email,
+            phone: user.Phone,
+            role: user.Role,
+            orgId: user.OrgId,
+            profileImage: user.ProfileImage,
+            organization: user.organization
+              ? {
+                  orgId: user.organization.OrgId,
+                  name: user.organization.Name,
+                }
+              : null,
+          },
+        });
+      }
+    }
+
+    // 2. If not a regular user, try to login as an organization
+    const organization = await prisma.organization.findUnique({
+      where: { Email: email },
+    });
+
+    if (!organization) {
+      return res.status(401).json({ message: 'Invalid email or password' });
+    }
+
+    // Organization password is stored in PendingAdmin
+    const pendingAdmin = await prisma.pendingAdmin.findFirst({
+      where: {
+        Email: email,
+        Verified: true,
+      },
+      orderBy: {
+        RequestedAt: 'desc',
+      },
+    });
+
+    if (!pendingAdmin) {
+      return res.status(401).json({ message: 'Invalid email or password' });
+    }
+
+    const isOrgPasswordValid = await comparePassword(password, pendingAdmin.PasswordHash);
+    if (!isOrgPasswordValid) {
+      return res.status(401).json({ message: 'Invalid email or password' });
+    }
+
+    // Generate JWT token for organization
+    const token = generateToken(organization.OrgId, 'organization', organization.OrgId);
+
+    return res.status(200).json({
+      message: 'Login successful',
+      token,
+      organization: {
+        orgId: organization.OrgId,
+        name: organization.Name,
+        email: organization.Email,
+        phone: organization.Phone,
+        address: organization.Address,
+        role: 'organization',
+      },
+    });
+  } catch (error: any) {
+    console.error('Error during login:', error);
+    return res.status(500).json({ message: 'Error during login', error: error.message });
+  }
+};

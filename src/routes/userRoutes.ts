@@ -5,6 +5,7 @@ import {
     registerOrganization,
     resendOrganizationOTP,
     verifyOrganizationOTP,
+    login,
 } from '../controller/userController.js';
 import catchAsync from '../utils/catchAsync.js';
 
@@ -20,7 +21,8 @@ router.post('/organization/verify-otp', catchAsync(verifyOrganizationOTP));// US
 router.post('/organization/resend-otp', catchAsync(resendOrganizationOTP));// US-2
 
 // User creation route (by organization)
-router.post('/create', catchAsync(createUser));
-
+router.post('/create', catchAsync(createUser));//US-3
+// Login route (for all user types)
+router.post('/login', catchAsync(login)); //US-4
 
 export default router;
