@@ -2,11 +2,8 @@ import express from 'express';
 import multer from 'multer';
 import {
     createUser,
-    forgotPassword,
-    login,
     registerOrganization,
     resendOrganizationOTP,
-    resetPassword,
     verifyOrganizationOTP,
 } from '../controller/userController.js';
 import catchAsync from '../utils/catchAsync.js';
@@ -21,6 +18,9 @@ const upload = multer({ storage: multer.memoryStorage() });
 router.post('/organization/register',upload.single('logo'),catchAsync(registerOrganization));// US-1
 router.post('/organization/verify-otp', catchAsync(verifyOrganizationOTP));// US-2
 router.post('/organization/resend-otp', catchAsync(resendOrganizationOTP));// US-2
+
+// User creation route (by organization)
+router.post('/create', catchAsync(createUser));
 
 
 export default router;
