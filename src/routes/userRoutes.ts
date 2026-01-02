@@ -6,6 +6,8 @@ import {
     resendOrganizationOTP,
     verifyOrganizationOTP,
     login,
+    forgotPassword,
+    resetPassword,
 } from '../controller/userController.js';
 import catchAsync from '../utils/catchAsync.js';
 
@@ -24,5 +26,10 @@ router.post('/organization/resend-otp', catchAsync(resendOrganizationOTP));// US
 router.post('/create', catchAsync(createUser));//US-3
 // Login route (for all user types)
 router.post('/login', catchAsync(login)); //US-4
+
+// Password reset routes
+router.post('/forgot-password', catchAsync(forgotPassword));// US-5
+router.post('/reset-password', catchAsync(resetPassword)); // US-5
+
 
 export default router;
