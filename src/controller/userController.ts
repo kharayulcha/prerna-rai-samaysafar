@@ -291,9 +291,11 @@ export const login = async (req: Request, res: Response) => {
 export const createUser = async (req: Request, res: Response) => {
   try {
     const authHeader = req.headers.authorization;
-    if (!authHeader) return res.status(401).json({ message: 'No token provided' });
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ message: 'No token provided' });
+    }
     const token = authHeader.split(' ')[1];
-    const payload: any = jwt.verify(token, JWT_SECRET as string);
+    const payload: any = jwt.verify(token as string, JWT_SECRET as string);
 
     const orgId = Number(payload.orgId || 0);
     if (!orgId) return res.status(400).json({ message: 'Invalid organization in token' });
@@ -357,9 +359,11 @@ export const createUser = async (req: Request, res: Response) => {
 export const listUsers = async (req: Request, res: Response) => {
   try {
     const authHeader = req.headers.authorization;
-    if (!authHeader) return res.status(401).json({ message: 'No token' });
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ message: 'No token' });
+    }
     const token = authHeader.split(' ')[1];
-    const payload: any = jwt.verify(token, JWT_SECRET as string);
+    const payload: any = jwt.verify(token as string, JWT_SECRET as string);
     const orgId = Number(payload.orgId || 0);
 
     const role = req.query.role as string;
@@ -398,9 +402,11 @@ export const listUsers = async (req: Request, res: Response) => {
 export const editProfile = async (req: Request, res: Response) => {
   try {
     const authHeader = req.headers.authorization;
-    if (!authHeader) return res.status(401).json({ message: 'No token' });
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ message: 'No token' });
+    }
     const token = authHeader.split(' ')[1];
-    const payload: any = jwt.verify(token, JWT_SECRET as string);
+    const payload: any = jwt.verify(token as string, JWT_SECRET as string);
     const userId = Number(payload.userId || 0);
     if (!userId) return res.status(401).json({ message: 'Invalid userId' });
 
@@ -426,5 +432,178 @@ export const editProfile = async (req: Request, res: Response) => {
     return res.status(500).json({ message: 'Error updating profile', error: err.message });
   }
 };
+export const editUser = async (req: Request, res: Response) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ message: 'No token' });
+    }
+    const token = authHeader.split(' ')[1];
+    const payload: any = jwt.verify(token as string, JWT_SECRET as string);
+
+    if (!isAdminUser(payload)) return res.status(403).json({ message: 'Only admin can edit users' });
+
+    const targetId = Number(req.params.id);
+    const orgIdFromToken = Number(payload.orgId || 0);
+    const { name, email, phone, parentId, routeId } = req.body as any;
+
+    const existing = await prisma.users.findUnique({ where: { UserId: targetId } });
+    if (!existing || existing.OrgId !== orgIdFromToken) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    const updateData: any = {};
+    if (name) updateData.Name = name;
+    if (email) updateData.Email = email;
+    if (phone) updateData.Phone = phone;
+    if (parentId !== undefined) updateData.ParentId = parentId ? Number(parentId) : null;
+    if (routeId !== undefined) updateData.RouteId = routeId ? Number(routeId) : null;
+
+    const updated = await prisma.users.update({
+      where: { UserId: targetId },
+      data: updateData
+    });
+
+    return res.status(200).json({ message: 'User updated', user: updated });
+
+  } catch (err: any) {
+    return res.status(500).json({ message: 'Error updating user', error: err.message });
+  }
+};
+
+export const deleteUser = async (req: Request, res: Response) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ message: 'No token' });
+    }
+    const token = authHeader.split(' ')[1];
+    const payload: any = jwt.verify(token as string, JWT_SECRET as string);
+
+    if (!isAdminUser(payload)) return res.status(403).json({ message: 'Only admin can delete users' });
+
+    const targetId = Number(req.params.id);
+    const orgIdFromToken = Number(payload.orgId || 0);
+    const existing = await prisma.users.findUnique({ where: { UserId: targetId } });
+    if (!existing || existing.OrgId !== orgIdFromToken) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    await prisma.$transaction(async (tx) => {
+      await tx.credentials.deleteMany({ where: { UserId: targetId } });
+      await tx.userCreationAudit.deleteMany({ where: { CreatedUserId: targetId } });
+      await tx.users.delete({ where: { UserId: targetId } });
+    });
+
+    return res.status(200).json({ message: 'User deleted' });
+
+  } catch (err: any) {
+    return res.status(500).json({ message: 'Error deleting user', error: err.message });
+  }
+};
+
+export const forgotPassword = async (req: Request, res: Response) => {
+  try {
+    const { email } = req.body;
+    const user = await prisma.users.findUnique({ where: { Email: email } });
+    if (!user) {
+      return res.status(404).json({ message: 'User with this email does not exist' });
+    }
+
+    const otp = generateOTP();
+    const expiresAt = new Date(Date.now() + OTP_EXPIRY_MINUTES * 60000);
+
+    await prisma.passwordReset.create({
+      data: {
+        Email: email,
+        OTP: otp,
+        OTPExpiresAt: expiresAt,
+      },
+    });
+
+    await sendPasswordResetOTPEmail(email, otp, user.Name);
+    return res.status(200).json({ message: 'Password reset OTP sent to email' });
+  } catch (error: any) {
+    console.error('ForgotPassword error:', error);
+    return res.status(500).json({ message: 'Error sending password reset email', error: error.message });
+  }
+};
+
+export const resetPassword = async (req: Request, res: Response) => {
+  try {
+    const { email, code, password, newPassword } = req.body;
+    const finalPassword = password || newPassword;
+
+    if (!finalPassword) {
+      return res.status(400).json({ message: 'New password is required' });
+    }
+
+    const passwordReset = await prisma.passwordReset.findFirst({
+      where: {
+        Email: email,
+        OTP: code,
+        Used: false,
+        OTPExpiresAt: { gt: new Date() },
+      },
+      orderBy: { RequestedAt: 'desc' },
+    });
+
+    if (!passwordReset) {
+      return res.status(400).json({ message: 'Invalid or expired OTP' });
+    }
+
+    const user = await prisma.users.findUnique({ where: { Email: email } });
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    const passwordHash = await bcrypt.hash(finalPassword, SALT_ROUNDS);
+
+    await prisma.$transaction(async (tx) => {
+      await tx.credentials.update({
+        where: { UserId: user.UserId },
+        data: { PasswordHash: passwordHash },
+      });
+
+      await tx.passwordReset.update({
+        where: { ResetId: passwordReset.ResetId },
+        data: { Used: true },
+      });
+    });
+
+    return res.status(200).json({ message: 'Password reset successful. You can now login.' });
+  } catch (error: any) {
+    console.error('ResetPassword error:', error);
+    return res.status(500).json({ message: 'Error resetting password', error: error.message });
+  }
+};
+
+/**
+ * Get Notifications - GET /api/users/notifications
+ */
+export const getNotifications = async (req: Request, res: Response) => {
+  try {
+    const authHeader = req.headers.authorization as string | undefined;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ message: 'Authorization header missing' });
+    }
+
+    const token = authHeader.split(' ')[1];
+    const payload = jwt.verify(token as string, JWT_SECRET!) as any;
+    const userId = Number(payload.userId);
+
+    const notifications = await prisma.notification.findMany({
+      where: { UserId: userId },
+      orderBy: { NotificationId: 'desc' },
+      take: 20
+    });
+
+    return res.status(200).json({ notifications });
+  } catch (error: any) {
+    console.error('getNotifications error:', error);
+    return res.status(500).json({ message: 'Error fetching notifications', error: error.message });
+  }
+};
+
 
 
