@@ -53,7 +53,7 @@ export const sendOTPEmail = async (email: string, otpCode: string, fullName: str
     console.log('OTP email sent successfully to ${email}');
   } catch (error: any) {
     console.error('Error sending OTP email:', error);
-    
+
     // Provide helpful error messages for common issues
     if (error.code === 'EAUTH') {
       const errorMessage = `
@@ -61,11 +61,11 @@ export const sendOTPEmail = async (email: string, otpCode: string, fullName: str
       console.error(errorMessage);
       throw new Error('Gmail authentication failed. Please use an App Password instead of your regular password. See console for details.');
     }
-    
+
     if (error.code === 'ECONNECTION' || error.code === 'ETIMEDOUT') {
       throw new Error('Failed to connect to email server. Please check your internet connection.');
     }
-    
+
     throw new Error(`Failed to send OTP email: ${error.message || 'Unknown error'}`);
   }
 };
@@ -162,15 +162,20 @@ export const sendPasswordResetOTPEmail = async (email: string, otpCode: string, 
     console.log(`Password reset OTP email sent successfully to ${email}`);
   } catch (error: any) {
     console.error('Error sending password reset OTP email:', error);
-    
+
     if (error.code === 'EAUTH') {
       throw new Error('Gmail authentication failed. Please use an App Password instead of your regular password.');
     }
-    
+
     if (error.code === 'ECONNECTION' || error.code === 'ETIMEDOUT') {
       throw new Error('Failed to connect to email server. Please check your internet connection.');
     }
-    
+
     throw new Error(`Failed to send password reset OTP email: ${error.message || 'Unknown error'}`);
   }
+};
+
+// Generate 6 digit OTP
+export const generateOTP = (): string => {
+  return Math.floor(100000 + Math.random() * 900000).toString();
 };

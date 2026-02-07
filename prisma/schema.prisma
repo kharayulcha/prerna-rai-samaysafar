@@ -1,5 +1,5 @@
 generator client {
-  provider = "prisma-client"
+  provider = "prisma-client-js"
   output   = "../generated/prisma"
 }
 
@@ -29,10 +29,18 @@ model Users {
   Email        String   @unique
   Phone        String
   ProfileImage String?
+  ParentId     Int?
+  RouteId      Int?
 
   organization   Organization? @relation(fields: [OrgId], references: [OrgId])
   credentials    Credentials?
   notifications  Notification[]
+
+  parent         Users?        @relation("StudentParent", fields: [ParentId], references: [UserId])
+  children       Users[]       @relation("StudentParent")
+  assignedRoute  Route?        @relation(fields: [RouteId], references: [RouteId])
+  assignedBus    Bus?          @relation(fields: [BusId], references: [BusId])
+  BusId          Int?
 
   driverRoutes   RouteDriverAssignment[]
   payments       Payment[]
@@ -92,6 +100,7 @@ model Bus {
   organization      Organization       @relation(fields: [OrgId], references: [OrgId])
   routeAssignments  RouteBusAssignment[]
   trips             Trip[]
+  assignedUsers     Users[]
 }
 
 model Route {
@@ -106,6 +115,7 @@ model Route {
   driverAssignments RouteDriverAssignment[]
   busAssignments    RouteBusAssignment[]
   trips             Trip[]
+  students          Users[]
 
   // has bills; Bill now links back with RouteId
   bills Bill[]
