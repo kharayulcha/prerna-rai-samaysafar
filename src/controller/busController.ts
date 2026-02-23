@@ -165,11 +165,20 @@ export const deleteBus = async (req: Request, res: Response) => {
     const bus = await prisma.bus.findUnique({ where: { BusId: busId }, include: { trips: true } });
     if (!bus || bus.OrgId !== orgId) return res.status(404).json({ message: 'Bus not found' });
 
-    if (bus.trips && bus.trips.length > 0) {
-      return res.status(400).json({ message: 'Cannot delete bus with existing trips. Remove trips first.' });
+    // Block only if there is a currently ACTIVE trip
+    const hasActiveTrip = bus.trips.some((t) => t.Status === 'active');
+    if (hasActiveTrip) {
+      return res.status(400).json({ message: 'Cannot delete bus while it has an active trip. End the trip first.' });
     }
 
     await prisma.$transaction(async (tx) => {
+      // Cascade-delete completed trip records (locations → notifications → trips)
+      const tripIds = bus.trips.map((t) => t.TripId);
+      if (tripIds.length > 0) {
+        await tx.location.deleteMany({ where: { TripId: { in: tripIds } } });
+        await tx.notification.deleteMany({ where: { TripId: { in: tripIds } } });
+        await tx.trip.deleteMany({ where: { TripId: { in: tripIds } } });
+      }
       await tx.routeBusAssignment.deleteMany({ where: { BusId: busId } });
       await tx.bus.delete({ where: { BusId: busId } });
     });
@@ -290,5 +299,76 @@ export const getBus = async (req: Request, res: Response) => {
   } catch (error: any) {
     console.error('Error fetching bus:', error);
     return res.status(500).json({ message: 'Error fetching bus', error: error.message });
+  }
+};
+
+/**
+ * Get Fleet Status - Live status of all buses in the organization
+ */
+export const getFleetStatus = async (req: Request, res: Response) => {
+  try {
+    const authHeader = req.headers.authorization as string | undefined;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ message: 'Authorization header missing or malformed' });
+    }
+
+    const token = authHeader.split(' ')[1];
+    let payload: any;
+    try {
+      payload = jwt.verify(token as string, JWT_SECRET as string) as any;
+    } catch (err) {
+      return res.status(401).json({ message: 'Invalid or expired token' });
+    }
+
+    let orgId = payload?.orgId || payload?.OrgId;
+    if (!orgId && payload?.userId) {
+      const user = await prisma.users.findUnique({ where: { UserId: Number(payload.userId) } });
+      orgId = user?.OrgId;
+    }
+
+    if (!orgId) return res.status(400).json({ message: 'Organization context not found' });
+
+    // 1. Fetch all buses for the organization
+    const buses = await prisma.bus.findMany({
+      where: { OrgId: Number(orgId) },
+      orderBy: { BusNumber: 'asc' },
+    });
+
+    // 2. Fetch all active trips for the organization
+    const activeTrips = await prisma.trip.findMany({
+      where: {
+        Status: 'active',
+        bus: { OrgId: Number(orgId) },
+      },
+      include: {
+        route: true,
+        driver: true,
+      },
+    });
+
+    // 3. Map buses to include their current status and active trip info
+    const fleetStatus = buses.map((bus) => {
+      const activeTrip = activeTrips.find((t) => t.BusId === bus.BusId);
+
+      return {
+        BusId: bus.BusId,
+        BusNumber: bus.BusNumber,
+        Model: bus.Model,
+        Status: activeTrip ? 'active' : 'idle',
+        ActiveTrip: activeTrip ? {
+          TripId: activeTrip.TripId,
+          RouteId: activeTrip.RouteId,
+          RouteName: activeTrip.route.Name,
+          StartTime: activeTrip.StartTime,
+          DriverName: activeTrip.driver.Name,
+          DriverPhone: activeTrip.driver.Phone,
+        } : null,
+      };
+    });
+
+    return res.status(200).json({ fleet: fleetStatus });
+  } catch (error: any) {
+    console.error('Error fetching fleet status:', error);
+    return res.status(500).json({ message: 'Error fetching fleet status', error: error.message });
   }
 };
