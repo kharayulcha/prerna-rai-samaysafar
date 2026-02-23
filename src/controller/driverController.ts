@@ -67,10 +67,18 @@ export const createDriver = async (req: Request, res: Response) => {
       return res.status(403).json({ message: 'Only admin users can create drivers' });
     }
 
-    const orgId = payload?.orgId;
+    // Robust OrgId handling
+    let orgId = payload?.orgId || payload?.OrgId;
+    if (!orgId && payload?.userId) {
+      const u = await prisma.users.findUnique({ where: { UserId: Number(payload.userId) } });
+      orgId = u?.OrgId;
+    }
+
     if (!orgId) return res.status(400).json({ message: 'Organization ID missing from token' });
 
     const { name, email, phone, password, routeId, busId } = req.body as any;
+    console.log(`[createDriver] Creating driver: ${name}, routeId: ${routeId}, busId: ${busId}, orgId: ${orgId}`);
+
     if (!name || !email || !phone || !password) {
       return res.status(400).json({ message: 'Missing required fields: name, email, phone, password' });
     }
@@ -86,7 +94,7 @@ export const createDriver = async (req: Request, res: Response) => {
     const result = await prisma.$transaction(async (tx) => {
       const user = await tx.users.create({
         data: {
-          OrgId: orgId,
+          OrgId: Number(orgId),
           Role: 'driver',
           Name: name,
           Email: email,
@@ -105,12 +113,21 @@ export const createDriver = async (req: Request, res: Response) => {
         },
       });
 
+      if (routeId) {
+        console.log(`[createDriver] Creating RouteDriverAssignment for RouteId: ${routeId}, DriverId: ${user.UserId}`);
+        await tx.routeDriverAssignment.create({
+          data: {
+            RouteId: Number(routeId),
+            DriverId: user.UserId,
+          },
+        });
+      }
+
       return user;
     });
 
-    // Optionally send credentials email (don't fail request on email error)
+    // Optionally send credentials email
     try {
-      // sendUserCredentialsEmail expects organization name as string; pass empty string if not available
       await sendUserCredentialsEmail(email, password, name, String(payload?.orgName || ''), 'driver');
     } catch (emailError: any) {
       console.error('Error sending driver credentials email:', emailError);
@@ -145,20 +162,31 @@ export const editDriver = async (req: Request, res: Response) => {
       return res.status(403).json({ message: 'Only admin users can edit drivers' });
     }
 
-    const orgId = payload?.orgId;
+    // Robust OrgId handling
+    let orgId = payload?.orgId || payload?.OrgId;
+    if (!orgId && payload?.userId) {
+      const u = await prisma.users.findUnique({ where: { UserId: Number(payload.userId) } });
+      orgId = u?.OrgId;
+    }
+
     if (!orgId) return res.status(400).json({ message: 'Organization ID missing from token' });
 
     const driverId = Number(req.params.id);
     if (isNaN(driverId)) return res.status(400).json({ message: 'Invalid driver id' });
 
     const existing = await prisma.users.findUnique({ where: { UserId: driverId } });
-    if (!existing || existing.OrgId !== orgId || existing.Role !== 'driver') return res.status(404).json({ message: 'Driver not found' });
+    if (!existing || existing.OrgId !== Number(orgId) || existing.Role !== 'driver') {
+      console.log(`[editDriver] Driver not found or unauthorized: id=${driverId}, orgId=${orgId}`);
+      return res.status(404).json({ message: 'Driver not found' });
+    }
 
     const { name, phone, password, routeId, busId } = req.body as any;
+    console.log(`[editDriver] Updating driver ${driverId}: name=${name}, routeId=${routeId}, busId=${busId}`);
 
     const updated = await prisma.$transaction(async (tx) => {
       const user = await tx.users.update({
-        where: { UserId: driverId }, data: {
+        where: { UserId: driverId },
+        data: {
           ...(name !== undefined ? { Name: name } : {}),
           ...(phone !== undefined ? { Phone: phone } : {}),
           ...(routeId !== undefined ? { RouteId: routeId ? Number(routeId) : null } : {}),
@@ -166,14 +194,26 @@ export const editDriver = async (req: Request, res: Response) => {
         }
       });
 
-      if (password !== undefined) {
+      if (password !== undefined && password !== '') {
         const passwordHash = await hashPassword(String(password));
-        // Update or create credentials
         const cred = await tx.credentials.findUnique({ where: { UserId: driverId } });
         if (cred) {
           await tx.credentials.update({ where: { UserId: driverId }, data: { PasswordHash: passwordHash, PasswordGeneratedAt: new Date() } });
         } else {
           await tx.credentials.create({ data: { UserId: driverId, PasswordHash: passwordHash, MustChangePassword: false } });
+        }
+      }
+
+      if (routeId !== undefined) {
+        console.log(`[editDriver] Updating RouteDriverAssignment for driver ${driverId} to RouteId ${routeId}`);
+        await tx.routeDriverAssignment.deleteMany({ where: { DriverId: driverId } });
+        if (routeId) {
+          await tx.routeDriverAssignment.create({
+            data: {
+              RouteId: Number(routeId),
+              DriverId: driverId,
+            },
+          });
         }
       }
 
@@ -218,15 +258,25 @@ export const deleteDriver = async (req: Request, res: Response) => {
     const driver = await prisma.users.findUnique({ where: { UserId: driverId }, include: { trips: true, driverRoutes: true } });
     if (!driver || driver.OrgId !== orgId || driver.Role !== 'driver') return res.status(404).json({ message: 'Driver not found' });
 
-    if (driver.trips && driver.trips.length > 0) {
-      return res.status(400).json({ message: 'Cannot delete driver with existing trips. Remove trips first.' });
+    // Block only if there is a currently ACTIVE trip
+    const hasActiveTrip = driver.trips.some((t) => t.Status === 'active');
+    if (hasActiveTrip) {
+      return res.status(400).json({ message: 'Cannot delete driver while they have an active trip. End the trip first.' });
     }
 
     await prisma.$transaction(async (tx) => {
-      // Delete route assignments first
+      // Cascade-delete completed trip records (locations → notifications → trips)
+      const tripIds = driver.trips.map((t) => t.TripId);
+      if (tripIds.length > 0) {
+        await tx.location.deleteMany({ where: { TripId: { in: tripIds } } });
+        await tx.notification.deleteMany({ where: { TripId: { in: tripIds } } });
+        await tx.trip.deleteMany({ where: { TripId: { in: tripIds } } });
+      }
+
+      // Delete route assignments
       await tx.routeDriverAssignment.deleteMany({ where: { DriverId: driverId } });
 
-      // Delete audit logs related to this user
+      // Delete audit logs
       await tx.userCreationAudit.deleteMany({ where: { CreatedUserId: driverId } });
       await tx.userCreationAudit.deleteMany({ where: { AdminUserId: driverId } });
 
@@ -265,10 +315,11 @@ export const listDrivers = async (req: Request, res: Response) => {
       return res.status(401).json({ message: 'Invalid or expired token' });
     }
 
-    let orgId = payload?.orgId;
+    // Robust OrgId handling
+    let orgId = payload?.orgId || payload?.OrgId;
     if (!orgId && payload?.userId) {
-      const user = await prisma.users.findUnique({ where: { UserId: Number(payload.userId) } });
-      orgId = user?.OrgId;
+      const u = await prisma.users.findUnique({ where: { UserId: Number(payload.userId) } });
+      orgId = u?.OrgId;
     }
 
     if (!orgId) return res.status(400).json({ message: 'Organization context not found' });
@@ -277,6 +328,10 @@ export const listDrivers = async (req: Request, res: Response) => {
     const where: any = { OrgId: Number(orgId), Role: 'driver' };
     if (name) where.Name = { contains: String(name), mode: 'insensitive' };
     if (email) where.Email = { contains: String(email), mode: 'insensitive' };
+
+    // DEBUG: Log all routes for this org
+    const allRoutes = await prisma.route.findMany({ where: { OrgId: Number(orgId) } });
+    console.log(`[DEBUG_ROUTES] Found ${allRoutes.length} routes for org ${orgId}:`, JSON.stringify(allRoutes));
 
     const drivers = await prisma.users.findMany({
       where,
@@ -287,27 +342,52 @@ export const listDrivers = async (req: Request, res: Response) => {
             route: true,
           },
         },
+        assignedRoute: true,
         assignedBus: true,
       },
     });
 
     const mappedDrivers = drivers.map((driver) => {
-      // Find the first assigned route name
-      let routeName = '';
-      if (driver.driverRoutes && driver.driverRoutes.length > 0) {
-        routeName = driver.driverRoutes[0]?.route?.Name ?? '';
-      }
+      // Prioritize direct assignedRoute Name, then check join table
+      const directRouteName = (driver as any).assignedRoute?.Name;
+      const joinRouteName = (driver.driverRoutes && driver.driverRoutes.length > 0)
+        ? driver.driverRoutes[0]?.route?.Name
+        : undefined;
+
+      const routeName = directRouteName ?? joinRouteName ?? '';
+
+      console.log(`[DEBUG_LIST] Driver: ${driver.Name}, RouteId: ${driver.RouteId}, direct: ${directRouteName}, join: ${joinRouteName}`);
 
       return {
-        ...driver,
-        Route: routeName,
+        UserId: driver.UserId,
+        userId: driver.UserId, // for frontend compatibility
+        OrgId: driver.OrgId,
+        Name: driver.Name,
+        name: driver.Name,
+        Email: driver.Email,
+        Phone: driver.Phone,
+        Role: driver.Role,
         RouteId: driver.RouteId,
+        routeId: driver.RouteId,
         BusId: driver.BusId,
+        busId: driver.BusId,
+        Route: routeName,
+        route: routeName, // explicit lowercase
+        routeName: routeName, // another variation
         BusNumber: driver.assignedBus?.BusNumber ?? '',
+        busNumber: driver.assignedBus?.BusNumber ?? '',
+        ProfileImage: driver.ProfileImage
       };
     });
 
-    return res.status(200).json({ drivers: mappedDrivers });
+    console.log(`[listDrivers] Returning ${mappedDrivers.length} drivers for orgId ${orgId}. First driver route: ${mappedDrivers[0]?.route}`);
+    return res.status(200).json({
+      drivers: mappedDrivers,
+      debugInfo: {
+        routesFound: allRoutes.length,
+        allRoutes: allRoutes.map(r => ({ id: r.RouteId, name: r.Name, org: r.OrgId }))
+      }
+    });
   } catch (error: any) {
     console.error('Error listing drivers:', error);
     return res.status(500).json({ message: 'Error listing drivers', error: error.message });
@@ -332,10 +412,11 @@ export const getDriver = async (req: Request, res: Response) => {
       return res.status(401).json({ message: 'Invalid or expired token' });
     }
 
-    let orgId = payload?.orgId;
+    // Robust OrgId handling
+    let orgId = payload?.orgId || payload?.OrgId;
     if (!orgId && payload?.userId) {
-      const user = await prisma.users.findUnique({ where: { UserId: Number(payload.userId) } });
-      orgId = user?.OrgId;
+      const u = await prisma.users.findUnique({ where: { UserId: Number(payload.userId) } });
+      orgId = u?.OrgId;
     }
 
     if (!orgId) return res.status(400).json({ message: 'Organization context not found' });
@@ -344,7 +425,7 @@ export const getDriver = async (req: Request, res: Response) => {
     if (isNaN(driverId)) return res.status(400).json({ message: 'Invalid driver id' });
 
     const driver = await prisma.users.findUnique({ where: { UserId: driverId } });
-    if (!driver || driver.OrgId !== orgId || driver.Role !== 'driver') return res.status(404).json({ message: 'Driver not found' });
+    if (!driver || driver.OrgId !== Number(orgId) || driver.Role !== 'driver') return res.status(404).json({ message: 'Driver not found' });
 
     return res.status(200).json({ driver });
   } catch (error: any) {

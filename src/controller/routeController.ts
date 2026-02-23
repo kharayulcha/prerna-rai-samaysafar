@@ -81,7 +81,7 @@ export const createRoute = async (req: Request, res: Response) => {
     const result = await prisma.$transaction(async (tx) => {
       const route = await tx.route.create({
         data: {
-          OrgId: orgId,
+          OrgId: Number(orgId),
           Name: name,
           Description: description ?? null,
           ScheduleDays: scheduleDays,
@@ -91,47 +91,33 @@ export const createRoute = async (req: Request, res: Response) => {
 
       // Validate and create bus assignments
       if (busIdsArr.length > 0) {
-        // Verify buses belong to this org
         const buses = await tx.bus.findMany({
-          where: { BusId: { in: busIdsArr }, OrgId: orgId },
-          select: { BusId: true },
+          where: { BusId: { in: busIdsArr }, OrgId: Number(orgId) },
         });
-        const foundBusIds = new Set(buses.map((b) => b.BusId));
-        const missingBuses = busIdsArr.filter((id) => !foundBusIds.has(id));
-        if (missingBuses.length > 0) {
-          throw new Error(`Some buses are not found or do not belong to this organization: ${missingBuses.join(',')}`);
-        }
+        if (buses.length !== busIdsArr.length) throw new Error('Some buses not found or unauthorized');
 
-        // Create assignments
         for (const busId of busIdsArr) {
           await tx.routeBusAssignment.create({
-            data: {
-              RouteId: route.RouteId,
-              BusId: busId,
-            },
+            data: { RouteId: route.RouteId, BusId: busId },
           });
         }
       }
 
       // Validate and create driver assignments
       if (driverIdsArr.length > 0) {
-        // Verify drivers belong to this org and have role 'driver'
         const drivers = await tx.users.findMany({
-          where: { UserId: { in: driverIdsArr }, OrgId: orgId, Role: 'driver' },
-          select: { UserId: true },
+          where: { UserId: { in: driverIdsArr }, OrgId: Number(orgId), Role: 'driver' },
         });
-        const foundDriverIds = new Set(drivers.map((d) => d.UserId));
-        const missingDrivers = driverIdsArr.filter((id) => !foundDriverIds.has(id));
-        if (missingDrivers.length > 0) {
-          throw new Error(`Some drivers are not found, not drivers, or do not belong to this organization: ${missingDrivers.join(',')}`);
-        }
+        if (drivers.length !== driverIdsArr.length) throw new Error('Some drivers not found or unauthorized');
 
         for (const driverId of driverIdsArr) {
           await tx.routeDriverAssignment.create({
-            data: {
-              RouteId: route.RouteId,
-              DriverId: driverId,
-            },
+            data: { RouteId: route.RouteId, DriverId: driverId },
+          });
+          // SYNC: Update the direct RouteId on the user
+          await tx.users.update({
+            where: { UserId: driverId },
+            data: { RouteId: route.RouteId },
           });
         }
       }
@@ -139,7 +125,6 @@ export const createRoute = async (req: Request, res: Response) => {
       return route;
     });
 
-    // Fetch created route with assignments for response
     const createdRoute = await prisma.route.findUnique({
       where: { RouteId: result.RouteId },
       include: {
@@ -151,17 +136,12 @@ export const createRoute = async (req: Request, res: Response) => {
     return res.status(201).json({ message: 'Route created successfully', route: createdRoute });
   } catch (error: any) {
     console.error('Error creating route:', error);
-    // If it's a validation/error thrown above, return 400
-    if (error.message && (error.message.startsWith('Some buses') || error.message.startsWith('Some drivers'))) {
-      return res.status(400).json({ message: error.message });
-    }
     return res.status(500).json({ message: 'Error creating route', error: error.message });
   }
 };
 
 /**
- * Edit Route - update name, description, scheduleDays, startTime, busIds, driverIds
- * PUT /api/routes/:id
+ * Edit Route
  */
 export const editRoute = async (req: Request, res: Response) => {
   try {
@@ -178,31 +158,21 @@ export const editRoute = async (req: Request, res: Response) => {
       return res.status(401).json({ message: 'Invalid or expired token' });
     }
 
-    // Only admin users can edit routes
-    if (!isAdminUser(payload)) {
-      return res.status(403).json({ message: 'Only admin users can edit routes' });
-    }
+    if (!isAdminUser(payload)) return res.status(403).json({ message: 'Only admin users can edit routes' });
 
-    const orgId = payload?.orgId;
+    let orgId = payload?.orgId || payload?.OrgId;
     if (!orgId) return res.status(400).json({ message: 'Organization ID missing from token' });
 
     const routeId = Number(req.params.id);
     if (isNaN(routeId)) return res.status(400).json({ message: 'Invalid route id' });
 
-    // Verify route exists and belongs to org
-    const existingRoute = await prisma.route.findUnique({ where: { RouteId: routeId } });
-    if (!existingRoute || existingRoute.OrgId !== orgId) {
-      return res.status(404).json({ message: 'Route not found' });
-    }
-
     const { name, description, scheduleDays, startTime, busIds, driverIds } = req.body as any;
 
-    // Validate arrays
     const busIdsArr: number[] | undefined = Array.isArray(busIds) ? busIds.map(Number) : undefined;
     const driverIdsArr: number[] | undefined = Array.isArray(driverIds) ? driverIds.map(Number) : undefined;
 
     const updated = await prisma.$transaction(async (tx) => {
-      // Update basic fields
+      // 1. Update basic route info
       const route = await tx.route.update({
         where: { RouteId: routeId },
         data: {
@@ -213,63 +183,59 @@ export const editRoute = async (req: Request, res: Response) => {
         },
       });
 
-      // Replace bus assignments if provided
+      // 2. Handle bus assignments
       if (busIdsArr !== undefined) {
-        // Verify buses belong to org
-        if (busIdsArr.length > 0) {
-          const buses = await tx.bus.findMany({ where: { BusId: { in: busIdsArr }, OrgId: orgId }, select: { BusId: true } });
-          const foundBusIds = new Set(buses.map((b) => b.BusId));
-          const missingBuses = busIdsArr.filter((id) => !foundBusIds.has(id));
-          if (missingBuses.length > 0) {
-            throw new Error(`Some buses are not found or do not belong to this organization: ${missingBuses.join(',')}`);
-          }
-        }
-
-        // Delete old assignments
         await tx.routeBusAssignment.deleteMany({ where: { RouteId: routeId } });
-
-        // Create new assignments
         for (const busId of busIdsArr) {
           await tx.routeBusAssignment.create({ data: { RouteId: routeId, BusId: busId } });
         }
       }
 
-      // Replace driver assignments if provided
+      // 3. Handle driver assignments
       if (driverIdsArr !== undefined) {
-        if (driverIdsArr.length > 0) {
-          const drivers = await tx.users.findMany({ where: { UserId: { in: driverIdsArr }, OrgId: orgId, Role: 'driver' }, select: { UserId: true } });
-          const foundDriverIds = new Set(drivers.map((d) => d.UserId));
-          const missingDrivers = driverIdsArr.filter((id) => !foundDriverIds.has(id));
-          if (missingDrivers.length > 0) {
-            throw new Error(`Some drivers are not found, not drivers, or do not belong to this organization: ${missingDrivers.join(',')}`);
-          }
+        // Find old assigned drivers to clear their RouteId
+        const oldAssignments = await tx.routeDriverAssignment.findMany({ where: { RouteId: routeId } });
+        const oldDriverIds = oldAssignments.map(a => a.DriverId);
+
+        // CLEAR: Nullify RouteId for old drivers if they are not in the new list
+        const driversToClear = oldDriverIds.filter(id => !driverIdsArr.includes(id));
+        if (driversToClear.length > 0) {
+          await tx.users.updateMany({
+            where: { UserId: { in: driversToClear }, RouteId: routeId },
+            data: { RouteId: null },
+          });
         }
 
+        // Delete old assignments
         await tx.routeDriverAssignment.deleteMany({ where: { RouteId: routeId } });
+
+        // Add new assignments and SYNC direct RouteId
         for (const driverId of driverIdsArr) {
           await tx.routeDriverAssignment.create({ data: { RouteId: routeId, DriverId: driverId } });
+          await tx.users.update({
+            where: { UserId: driverId },
+            data: { RouteId: routeId },
+          });
         }
       }
 
       return route;
     });
 
-    // Return updated route with assignments
-    const updatedRoute = await prisma.route.findUnique({ where: { RouteId: updated.RouteId }, include: { busAssignments: { include: { bus: true } }, driverAssignments: { include: { driver: true } } } });
+    const refreshed = await prisma.route.findUnique({
+      where: { RouteId: routeId },
+      include: { busAssignments: { include: { bus: true } }, driverAssignments: { include: { driver: true } } },
+    });
 
-    return res.status(200).json({ message: 'Route updated successfully', route: updatedRoute });
+    return res.status(200).json({ message: 'Route updated successfully', route: refreshed });
   } catch (error: any) {
     console.error('Error updating route:', error);
-    if (error.message && (error.message.startsWith('Some buses') || error.message.startsWith('Some drivers'))) {
-      return res.status(400).json({ message: error.message });
-    }
     return res.status(500).json({ message: 'Error updating route', error: error.message });
   }
 };
 
 /**
- * Delete Route - DELETE /api/routes/:id
- * Only admin can delete a route; prevent deletion if trips exist
+ * Delete Route
  */
 export const deleteRoute = async (req: Request, res: Response) => {
   try {
@@ -286,28 +252,43 @@ export const deleteRoute = async (req: Request, res: Response) => {
       return res.status(401).json({ message: 'Invalid or expired token' });
     }
 
-    if (!isAdminUser(payload)) {
-      return res.status(403).json({ message: 'Only admin users can delete routes' });
-    }
+    if (!isAdminUser(payload)) return res.status(403).json({ message: 'Only admin users can delete routes' });
 
-    const orgId = payload?.orgId;
+    let orgId = payload?.orgId || payload?.OrgId;
     if (!orgId) return res.status(400).json({ message: 'Organization ID missing from token' });
 
     const routeId = Number(req.params.id);
     if (isNaN(routeId)) return res.status(400).json({ message: 'Invalid route id' });
 
-    const route = await prisma.route.findUnique({ where: { RouteId: routeId }, include: { trips: true } });
-    if (!route || route.OrgId !== orgId) {
-      return res.status(404).json({ message: 'Route not found' });
-    }
+    const route = await prisma.route.findUnique({
+      where: { RouteId: routeId },
+      include: { trips: true },
+    });
+
+    if (!route || route.OrgId !== Number(orgId)) return res.status(404).json({ message: 'Route not found' });
 
     if (route.trips && route.trips.length > 0) {
-      return res.status(400).json({ message: 'Cannot delete route with existing trips. Please remove trips first.' });
+      return res.status(400).json({ message: 'Cannot delete route with active or past trips for history preservation. Please archive instead.' });
     }
 
     await prisma.$transaction(async (tx) => {
+      // 1. Nullify RouteId for all users (Drivers/Students) linked to this route
+      await tx.users.updateMany({
+        where: { RouteId: routeId },
+        data: { RouteId: null },
+      });
+
+      // 2. Nullify RouteId in Bill records if any
+      await tx.bill.updateMany({
+        where: { RouteId: routeId },
+        data: { RouteId: null },
+      });
+
+      // 3. Delete assignments
       await tx.routeBusAssignment.deleteMany({ where: { RouteId: routeId } });
       await tx.routeDriverAssignment.deleteMany({ where: { RouteId: routeId } });
+
+      // 4. Finally delete the route
       await tx.route.delete({ where: { RouteId: routeId } });
     });
 
