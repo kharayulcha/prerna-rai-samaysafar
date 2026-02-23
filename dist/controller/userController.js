@@ -1,491 +1,593 @@
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 import prisma from '../model/index.js';
-import { sendOTPEmail } from '../utils/emailService.js';
-import { Prisma } from '@prisma/client';
+import { generateOTP, sendOTPEmail, sendPasswordResetOTPEmail, sendUserCredentialsEmail } from '../utils/emailService.js';
 const JWT_SECRET = process.env.JWT_SECRET || 'samaysafar_secret_key';
 const OTP_EXPIRY_MINUTES = 10;
-// Helper function to generate OTP
-const generateOTP = () => {
-    return Math.floor(100000 + Math.random() * 900000).toString(); // 6-digit OTP
-};
-// Helper function to hash password
-const hashPassword = async (password) => {
-    return await bcrypt.hash(password, 10);
-};
-// Helper function to compare password
-const comparePassword = async (password, hashedPassword) => {
-    return await bcrypt.compare(password, hashedPassword);
-};
-// Helper function to generate JWT token
-const generateToken = (userId, role, orgId) => {
-    const payload = { userId, role };
-    if (orgId)
-        payload.orgId = orgId;
-    return jwt.sign(payload, JWT_SECRET, { expiresIn: '7d' });
-};
+const SALT_ROUNDS = 10;
 /**
- * Organization Registration
- * Organization registers with name, email, phone, password
- * Gets OTP code via email
- * Address will be collected during OTP verification
+ * Helper function to check if user is admin based on JWT payload
  */
+const isAdminUser = (payload) => {
+    if (payload?.roleId === 1 || payload?.RoleId === 1)
+        return true;
+    const roleCandidates = [
+        payload?.role,
+        payload?.Role,
+        payload?.userRole,
+        payload?.UserRole,
+        payload?.userType,
+        payload?.UserType,
+        payload?.roleName,
+        payload?.RoleName,
+    ]
+        .filter((v) => v !== undefined && v !== null)
+        .map((v) => String(v).toLowerCase());
+    if (roleCandidates.some((r) => r === '1'))
+        return true;
+    if (roleCandidates.some((r) => /admin|orgadmin|organization/.test(r)))
+        return true;
+    return !!(payload?.isAdmin ?? payload?.IsAdmin ?? payload?.admin);
+};
 export const registerOrganization = async (req, res) => {
-    const { name, email, phone, password } = req.body;
-    // Validate required fields
-    if (!name || !email || !phone || !password) {
-        return res.status(400).json({
-            message: 'Missing required fields: name, email, phone, password'
-        });
-    }
-    // Validate password strength (optional - add your requirements)
-    if (password.length < 6) {
-        return res.status(400).json({
-            message: 'Password must be at least 6 characters long'
-        });
-    }
+    const { name, email, phone, password, address } = req.body;
+    const file = req.file;
     try {
-        // Check if organization already exists
-        const existingOrg = await prisma.organization.findUnique({
-            where: { Email: email },
-        });
-        if (existingOrg) {
-            return res.status(400).json({ message: 'Organization with this email already exists' });
-        }
-        // Check if there's a pending registration for this email
-        const pendingAdmin = await prisma.pendingAdmin.findUnique({
-            where: { Email: email },
-        });
-        if (pendingAdmin && !pendingAdmin.Verified) {
-            // Check if OTP is still valid
-            if (new Date() < pendingAdmin.OTPExpiresAt) {
-                return res.status(400).json({
-                    message: 'Registration already in progress. Please check your email for OTP or use resend OTP.'
-                });
+        const existingPending = await prisma.pendingAdmin.findUnique({ where: { Email: email } });
+        if (existingPending) {
+            if (existingPending.Verified) {
+                return res.status(400).json({ message: 'Organization already verified. Please login.' });
             }
-            // OTP expired, delete old record
-            await prisma.pendingAdmin.delete({
-                where: { PendingId: pendingAdmin.PendingId },
-            });
         }
-        // Hash password
-        const passwordHash = await hashPassword(password);
-        // Generate OTP
-        const otpCode = generateOTP();
-        const expiresAt = new Date();
-        expiresAt.setMinutes(expiresAt.getMinutes() + OTP_EXPIRY_MINUTES);
-        // Create pending admin record (for organization registration)
-        await prisma.pendingAdmin.create({
-            data: {
+        const existingOrg = await prisma.organization.findUnique({ where: { Email: email } });
+        if (existingOrg) {
+            return res.status(400).json({ message: 'Organization already exists.' });
+        }
+        const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
+        // Process logo if provided - Logo is Bytes? in DB
+        let logoBuffer = null;
+        if (file && file.buffer) {
+            logoBuffer = file.buffer;
+        }
+        const otp = generateOTP();
+        const expiresAt = new Date(Date.now() + OTP_EXPIRY_MINUTES * 60000);
+        await prisma.pendingAdmin.upsert({
+            where: { Email: email },
+            update: {
+                Name: name,
+                Phone: phone,
+                PasswordHash: passwordHash,
+                Address: address,
+                Logo: logoBuffer ? new Uint8Array(logoBuffer) : null,
+                OTP: otp,
+                OTPExpiresAt: expiresAt,
+            },
+            create: {
                 Name: name,
                 Email: email,
                 Phone: phone,
                 PasswordHash: passwordHash,
-                OTP: otpCode,
-                OTPExpiresAt: expiresAt,
-                Verified: false,
-            },
-        });
-        // Send OTP via email
-        try {
-            await sendOTPEmail(email, otpCode, name);
-        }
-        catch (emailError) {
-            console.error('Error sending OTP email:', emailError);
-            // Delete the pending admin record if email fails
-            await prisma.pendingAdmin.deleteMany({
-                where: { Email: email },
-            });
-            return res.status(500).json({
-                message: 'Failed to send OTP email. Please try again.'
-            });
-        }
-        return res.status(201).json({
-            message: 'Registration initiated. Please check your email for the OTP verification code to complete registration.',
-            email: email,
-        });
-    }
-    catch (error) {
-        console.error('Error registering organization:', error);
-        if (error.code === 'P2002') {
-            return res.status(400).json({ message: 'Email already in use' });
-        }
-        return res.status(500).json({
-            message: 'Error registering organization',
-            error: error.message
-        });
-    }
-};
-/**
- * Resend OTP for Organization Registration
- */
-export const resendOrganizationOTP = async (req, res) => {
-    const { email } = req.body;
-    if (!email) {
-        return res.status(400).json({ message: 'Email is required' });
-    }
-    try {
-        // Check if organization already exists
-        const existingOrg = await prisma.organization.findUnique({
-            where: { Email: email },
-        });
-        if (existingOrg) {
-            return res.status(400).json({
-                message: 'Organization already registered. Please login instead.'
-            });
-        }
-        // Find pending registration
-        const pendingAdmin = await prisma.pendingAdmin.findUnique({
-            where: { Email: email },
-        });
-        if (!pendingAdmin) {
-            return res.status(404).json({
-                message: 'No pending registration found. Please register first.'
-            });
-        }
-        if (pendingAdmin.Verified) {
-            return res.status(400).json({
-                message: 'Organization already verified. Please login instead.'
-            });
-        }
-        // Generate new OTP
-        const otpCode = generateOTP();
-        const expiresAt = new Date();
-        expiresAt.setMinutes(expiresAt.getMinutes() + OTP_EXPIRY_MINUTES);
-        // Update pending admin with new OTP
-        await prisma.pendingAdmin.update({
-            where: { PendingId: pendingAdmin.PendingId },
-            data: {
-                OTP: otpCode,
-                OTPExpiresAt: expiresAt,
-            },
-        });
-        try {
-            await sendOTPEmail(email, otpCode, pendingAdmin.Name);
-            return res.status(200).json({
-                message: 'OTP has been resent to your email address.',
-            });
-        }
-        catch (emailError) {
-            console.error('Error sending OTP email:', emailError);
-            return res.status(500).json({
-                message: 'Failed to send OTP email. Please try again later.',
-            });
-        }
-    }
-    catch (error) {
-        console.error('Error resending OTP:', error);
-        return res.status(500).json({ message: 'Error resending OTP', error: error.message });
-    }
-};
-/**
- * Verify OTP for Organization Registration
- * After verification, organization is created in the database
- */
-export const verifyOrganizationOTP = async (req, res) => {
-    const { email, code, address } = req.body;
-    if (!email || !code) {
-        return res.status(400).json({ message: 'Email and OTP code are required' });
-    }
-    if (!address) {
-        return res.status(400).json({ message: 'Address is required' });
-    }
-    try {
-        // Find pending admin record
-        const pendingAdmin = await prisma.pendingAdmin.findUnique({
-            where: { Email: email },
-        });
-        if (!pendingAdmin) {
-            return res.status(400).json({ message: 'No pending registration found' });
-        }
-        if (pendingAdmin.Verified) {
-            return res.status(400).json({ message: 'Organization already verified. Please login instead.' });
-        }
-        // Check if OTP matches and is not expired
-        if (pendingAdmin.OTP !== code) {
-            return res.status(400).json({ message: 'Invalid OTP code' });
-        }
-        if (new Date() > pendingAdmin.OTPExpiresAt) {
-            return res.status(400).json({ message: 'OTP has expired. Please request a new one.' });
-        }
-        // Check if organization already exists
-        const existingOrg = await prisma.organization.findUnique({
-            where: { Email: email },
-        });
-        if (existingOrg) {
-            // Mark as verified and delete pending record
-            await prisma.pendingAdmin.update({
-                where: { PendingId: pendingAdmin.PendingId },
-                data: { Verified: true },
-            });
-            return res.status(400).json({ message: 'Organization already exists' });
-        }
-        // Create organization in database
-        const organization = await prisma.organization.create({
-            data: {
-                Name: pendingAdmin.Name,
-                Email: pendingAdmin.Email,
-                Phone: pendingAdmin.Phone,
                 Address: address,
-            },
+                Logo: logoBuffer ? new Uint8Array(logoBuffer) : null,
+                OTP: otp,
+                OTPExpiresAt: expiresAt,
+            }
         });
-        // Mark pending admin as verified
-        await prisma.pendingAdmin.update({
-            where: { PendingId: pendingAdmin.PendingId },
-            data: { Verified: true },
-        });
-        // Generate JWT token
-        const token = generateToken(organization.OrgId, 'organization', organization.OrgId);
-        return res.status(200).json({
-            message: 'OTP verified successfully. Organization account created.',
-            token,
-            organization: {
-                orgId: organization.OrgId,
-                name: organization.Name,
-                email: organization.Email,
-                phone: organization.Phone,
-                address: organization.Address,
-            },
-        });
+        await sendOTPEmail(email, otp, name);
+        return res.status(200).json({ message: 'Registration successful. Verify OTP sent to email.' });
     }
     catch (error) {
-        console.error('Error verifying OTP:', error);
-        if (error.code === 'P2002') {
-            return res.status(400).json({ message: 'Organization with this email already exists' });
-        }
-        return res.status(500).json({ message: 'Error verifying OTP', error: error.message });
+        console.error('Registration error:', error);
+        res.status(500).json({ message: 'Error registering organization', error: error.message });
     }
 };
-/**
- * Create User (Parent, Student, or Driver) by Organization
- * Only organizations can create users
- */
-export const createUser = async (req, res) => {
-    const { name, email, phone, password, role, profileImage } = req.body;
-    const orgId = req.orgId || req.body.orgId; // Assuming middleware sets orgId
-    // Validate required fields
-    if (!name || !email || !phone || !password || !role) {
-        return res.status(400).json({
-            message: 'Missing required fields: name, email, phone, password, role'
-        });
-    }
-    // Validate role
-    const validRoles = ['parent', 'student', 'driver'];
-    const userRole = role.toLowerCase();
-    if (!validRoles.includes(userRole)) {
-        return res.status(400).json({
-            message: 'Invalid role. Must be one of: parent, student, driver'
-        });
-    }
-    // Validate password strength
-    if (password.length < 6) {
-        return res.status(400).json({
-            message: 'Password must be at least 6 characters long'
-        });
-    }
-    // If orgId is not in request body, it should come from authenticated organization
-    if (!orgId) {
-        return res.status(400).json({
-            message: 'Organization ID is required. Please ensure you are authenticated as an organization.'
-        });
-    }
+export const verifyOrganizationOTP = async (req, res) => {
+    const { email, code } = req.body;
     try {
-        // Verify organization exists
-        const organization = await prisma.organization.findUnique({
-            where: { OrgId: orgId },
-        });
-        if (!organization) {
-            return res.status(404).json({ message: 'Organization not found' });
-        }
-        // Check if user already exists
-        const existingUser = await prisma.users.findUnique({
-            where: { Email: email },
-        });
-        if (existingUser) {
-            return res.status(400).json({ message: 'User with this email already exists' });
-        }
-        // Hash password
-        const passwordHash = await hashPassword(password);
-        // Create user and credentials in a transaction
-        const result = await prisma.$transaction(async (tx) => {
-            // Create user
-            const user = await tx.users.create({
+        const pending = await prisma.pendingAdmin.findUnique({ where: { Email: email } });
+        if (!pending)
+            return res.status(404).json({ message: 'Registration not found' });
+        if (pending.Verified)
+            return res.status(400).json({ message: 'Already verified' });
+        if (pending.OTP !== code)
+            return res.status(400).json({ message: 'Invalid OTP' });
+        if (new Date() > pending.OTPExpiresAt)
+            return res.status(400).json({ message: 'OTP expired' });
+        // Transaction to create Org and Admin User
+        await prisma.$transaction(async (tx) => {
+            const org = await tx.organization.create({
                 data: {
-                    OrgId: orgId,
-                    Role: userRole,
-                    Name: name,
-                    Email: email,
-                    Phone: phone,
-                    ProfileImage: profileImage || null,
-                },
+                    Name: pending.Name,
+                    Email: pending.Email,
+                    Phone: pending.Phone,
+                    Address: pending.Address || '',
+                    Logo: pending.Logo ? new Uint8Array(pending.Logo) : null,
+                }
             });
-            // Create credentials
+            // ProfileImage in Users is String?
+            // If we have logo bytes, we can convert to base64 data URL for User profile image string
+            const profileImageStr = pending.Logo
+                ? `data:image/png;base64,${Buffer.from(pending.Logo).toString('base64')}`
+                : null;
+            // Create Admin User
+            const admin = await tx.users.create({
+                data: {
+                    OrgId: org.OrgId,
+                    Role: 'admin',
+                    Name: pending.Name,
+                    Email: pending.Email,
+                    Phone: pending.Phone,
+                    ProfileImage: profileImageStr
+                }
+            });
+            // Create Credentials
             await tx.credentials.create({
                 data: {
-                    UserId: user.UserId,
-                    PasswordHash: passwordHash,
-                    MustChangePassword: false, // Organization sets password, so no need to change
+                    UserId: admin.UserId,
+                    PasswordHash: pending.PasswordHash,
                     EmailSentAt: new Date(),
-                },
+                    MustChangePassword: false
+                }
             });
-            // Create audit record
-            // Note: AdminUserId must reference a Users record, not Organization
-            // Try to find an admin user for this organization, or skip audit if none exists
-            const adminUser = await tx.users.findFirst({
-                where: {
-                    OrgId: orgId,
-                    Role: 'admin', // Assuming there might be admin users
-                },
+            await tx.pendingAdmin.update({
+                where: { PendingId: pending.PendingId },
+                data: { Verified: true }
             });
-            if (adminUser) {
-                await tx.userCreationAudit.create({
-                    data: {
-                        CreatedUserId: user.UserId,
-                        AdminUserId: adminUser.UserId,
-                        EmailSentAt: new Date(),
-                        DeliveryStatus: 'sent',
-                    },
-                });
-            }
-            else {
-                // If no admin user exists, we skip audit creation
-                // You may want to create an admin user for the organization or update the schema
-                console.warn('No admin user found for organization ${orgId}. Skipping audit creation.');
-            }
-            return user;
         });
-        // Send welcome email with credentials (optional)
-        try {
-            await sendOTPEmail(email, password, name); // Reusing email service for welcome email
-        }
-        catch (emailError) {
-            console.error('Error sending welcome email:', emailError);
-            // Don't fail the request if email fails
-        }
-        return res.status(201).json({
-            message: '${userRole} created successfully',
-            user: {
-                userId: result.UserId,
-                name: result.Name,
-                email: result.Email,
-                phone: result.Phone,
-                role: result.Role,
-                orgId: result.OrgId,
-            },
-        });
+        return res.status(200).json({ message: 'Verification successful. Login to continue.' });
     }
     catch (error) {
-        console.error('Error creating user:', error);
-        if (error.code === 'P2002') {
-            return res.status(400).json({ message: 'Email already in use' });
-        }
-        return res.status(500).json({
-            message: 'Error creating user',
-            error: error.message
-        });
+        console.error("Verification error", error);
+        return res.status(500).json({ message: 'Verification failed', error: error.message });
     }
 };
-/**
- * Login for all user types (Organization, Parent, Student, Driver)
- */
-export const login = async (req, res) => {
-    const { email, password, role } = req.body;
-    if (!email || !password) {
-        return res.status(400).json({ message: 'Email and password are required' });
-    }
+export const resendOrganizationOTP = async (req, res) => {
+    const { email } = req.body;
     try {
-        // Check if it's an organization login
-        if (role && role.toLowerCase() === 'organization') {
-            // Find organization
-            const organization = await prisma.organization.findUnique({
-                where: { Email: email },
-            });
-            if (!organization) {
-                return res.status(401).json({ message: 'Invalid email or password' });
-            }
-            // Check pending admin for password (since Organization doesn't have credentials table)
-            // You may need to add a credentials table for organizations or use PendingAdmin
-            const pendingAdmin = await prisma.pendingAdmin.findFirst({
-                where: {
-                    Email: email,
-                    Verified: true,
-                },
-                orderBy: {
-                    RequestedAt: 'desc',
-                },
-            });
-            if (!pendingAdmin) {
-                return res.status(401).json({ message: 'Invalid email or password' });
-            }
-            // Verify password
-            const isPasswordValid = await comparePassword(password, pendingAdmin.PasswordHash);
-            if (!isPasswordValid) {
-                return res.status(401).json({ message: 'Invalid email or password' });
-            }
-            // Generate JWT token
-            const token = generateToken(organization.OrgId, 'organization', organization.OrgId);
-            return res.status(200).json({
-                message: 'Login successful',
-                token,
-                organization: {
-                    orgId: organization.OrgId,
-                    name: organization.Name,
-                    email: organization.Email,
-                    phone: organization.Phone,
-                    address: organization.Address,
-                    role: 'organization',
-                },
-            });
-        }
-        // For other user types (parent, student, driver)
-        // Find user
+        const pending = await prisma.pendingAdmin.findUnique({ where: { Email: email } });
+        if (!pending)
+            return res.status(404).json({ message: 'User not found' });
+        const otp = generateOTP();
+        const expiresAt = new Date(Date.now() + OTP_EXPIRY_MINUTES * 60000);
+        await prisma.pendingAdmin.update({
+            where: { Email: email },
+            data: { OTP: otp, OTPExpiresAt: expiresAt }
+        });
+        await sendOTPEmail(email, otp, pending.Name);
+        return res.status(200).json({ message: 'OTP resent.' });
+    }
+    catch (err) {
+        return res.status(500).json({ message: 'Error resending OTP', error: err.message });
+    }
+};
+export const login = async (req, res) => {
+    const { email, password } = req.body;
+    try {
         const user = await prisma.users.findUnique({
             where: { Email: email },
             include: {
-                credentials: true,
                 organization: true,
-            },
+                parent: { select: { Name: true } },
+                assignedRoute: {
+                    include: {
+                        driverAssignments: {
+                            where: { Status: 'active' },
+                            include: { driver: { select: { Name: true, Phone: true } } }
+                        },
+                        busAssignments: {
+                            where: { Status: 'active' },
+                            include: { bus: { select: { BusNumber: true } } }
+                        }
+                    }
+                },
+                driverRoutes: {
+                    where: { Status: 'active' },
+                    include: {
+                        route: {
+                            include: {
+                                busAssignments: {
+                                    where: { Status: 'active' },
+                                    include: { bus: { select: { BusNumber: true } } }
+                                }
+                            }
+                        }
+                    }
+                },
+                children: {
+                    include: {
+                        assignedRoute: {
+                            include: {
+                                driverAssignments: {
+                                    where: { Status: 'active' },
+                                    include: { driver: { select: { Name: true, Phone: true } } }
+                                },
+                                busAssignments: {
+                                    where: { Status: 'active' },
+                                    include: { bus: { select: { BusNumber: true } } }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         });
-        if (!user) {
-            return res.status(401).json({ message: 'Invalid email or password' });
+        if (!user)
+            return res.status(401).json({ message: 'Invalid credentials' });
+        const creds = await prisma.credentials.findUnique({ where: { UserId: user.UserId } });
+        if (!creds)
+            return res.status(401).json({ message: 'Invalid credentials' });
+        const valid = await bcrypt.compare(password, creds.PasswordHash);
+        if (!valid)
+            return res.status(401).json({ message: 'Invalid credentials' });
+        // Extract route info for drivers if not directly assigned
+        let routeId = user.RouteId;
+        let busId = user.BusId;
+        let routeName = user.assignedRoute?.Name || null;
+        let busNumber = user.assignedRoute?.busAssignments[0]?.bus?.BusNumber || null;
+        if (user.Role?.toLowerCase() === 'driver' && (!routeId || !busId) && user.driverRoutes.length > 0) {
+            const primaryAssignment = user.driverRoutes[0];
+            if (primaryAssignment) {
+                if (!routeId) {
+                    routeId = primaryAssignment.RouteId;
+                    routeName = primaryAssignment.route.Name;
+                }
+                if (!busId) {
+                    busId = primaryAssignment.route.busAssignments[0]?.BusId || null;
+                    if (!busNumber) {
+                        busNumber = primaryAssignment.route.busAssignments[0]?.bus?.BusNumber || null;
+                    }
+                }
+            }
         }
-        // Verify role if provided
-        if (role && user.Role.toLowerCase() !== role.toLowerCase()) {
-            return res.status(403).json({
-                message: 'Invalid role. This account is registered as ${user.Role}, not ${role}'
-            });
-        }
-        // Verify password
-        if (!user.credentials) {
-            return res.status(401).json({ message: 'Invalid email or password' });
-        }
-        const isPasswordValid = await comparePassword(password, user.credentials.PasswordHash);
-        if (!isPasswordValid) {
-            return res.status(401).json({ message: 'Invalid email or password' });
-        }
-        // Generate JWT token
-        const token = generateToken(user.UserId, user.Role, user.OrgId || undefined);
+        const token = jwt.sign({
+            userId: user.UserId,
+            orgId: user.OrgId,
+            role: user.Role,
+            email: user.Email,
+            name: user.Name,
+            phone: user.Phone,
+            address: user.organization?.Address || '',
+            routeId: routeId,
+            busId: busId,
+            parentName: user.parent?.Name || null,
+            routeName: routeName,
+            driverName: user.assignedRoute?.driverAssignments[0]?.driver?.Name || null,
+            driverPhone: user.assignedRoute?.driverAssignments[0]?.driver?.Phone || null,
+            busNumber: busNumber,
+            children: user.children.map(c => ({
+                name: c.Name,
+                routeName: c.assignedRoute?.Name || null,
+                driverName: c.assignedRoute?.driverAssignments[0]?.driver?.Name || null,
+                driverPhone: c.assignedRoute?.driverAssignments[0]?.driver?.Phone || null,
+                busNumber: c.assignedRoute?.busAssignments[0]?.bus?.BusNumber || null,
+            }))
+        }, JWT_SECRET, { expiresIn: '30d' });
         return res.status(200).json({
             message: 'Login successful',
             token,
             user: {
-                userId: user.UserId,
+                id: user.UserId,
                 name: user.Name,
-                email: user.Email,
-                phone: user.Phone,
                 role: user.Role,
                 orgId: user.OrgId,
+                email: user.Email,
+                phone: user.Phone,
+                address: user.organization?.Address || '',
+                routeId: routeId,
+                busId: busId,
                 profileImage: user.ProfileImage,
+                parentName: user.parent?.Name || null,
+                routeName: routeName,
+                driverName: user.assignedRoute?.driverAssignments[0]?.driver?.Name || null,
+                driverPhone: user.assignedRoute?.driverAssignments[0]?.driver?.Phone || null,
+                busNumber: busNumber,
+                children: user.children.map(c => ({
+                    name: c.Name,
+                    routeName: c.assignedRoute?.Name || null,
+                    driverName: c.assignedRoute?.driverAssignments[0]?.driver?.Name || null,
+                    driverPhone: c.assignedRoute?.driverAssignments[0]?.driver?.Phone || null,
+                    busNumber: c.assignedRoute?.busAssignments[0]?.bus?.BusNumber || null,
+                })),
                 organization: user.organization ? {
-                    orgId: user.organization.OrgId,
                     name: user.organization.Name,
-                } : null,
-            },
+                    logo: user.organization.Logo ? `data:image/png;base64,${Buffer.from(user.organization.Logo).toString('base64')}` : null,
+                    address: user.organization.Address
+                } : null
+            }
         });
     }
+    catch (err) {
+        console.error(err);
+        return res.status(500).json({ message: 'Error logging in', error: err.message });
+    }
+};
+export const createUser = async (req, res) => {
+    try {
+        const authHeader = req.headers.authorization;
+        if (!authHeader || !authHeader.startsWith('Bearer ')) {
+            return res.status(401).json({ message: 'No token provided' });
+        }
+        const token = authHeader.split(' ')[1];
+        const payload = jwt.verify(token, JWT_SECRET);
+        const orgId = Number(payload.orgId || 0);
+        if (!orgId)
+            return res.status(400).json({ message: 'Invalid organization in token' });
+        const { name, email, phone, role, password, parentId, routeId } = req.body;
+        const existing = await prisma.users.findUnique({ where: { Email: email } });
+        if (existing)
+            return res.status(400).json({ message: 'Email already exists' });
+        const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
+        const newUser = await prisma.$transaction(async (tx) => {
+            const u = await tx.users.create({
+                data: {
+                    OrgId: orgId,
+                    Name: name,
+                    Email: email,
+                    Phone: phone,
+                    Role: role,
+                    ParentId: parentId ? Number(parentId) : null,
+                    RouteId: routeId ? Number(routeId) : null
+                }
+            });
+            await tx.credentials.create({
+                data: {
+                    UserId: u.UserId,
+                    PasswordHash: passwordHash,
+                    EmailSentAt: new Date(),
+                    MustChangePassword: true
+                }
+            });
+            // Audit trail
+            await tx.userCreationAudit.create({
+                data: {
+                    CreatedUserId: u.UserId,
+                    AdminUserId: Number(payload.userId || 0),
+                    EmailSentAt: new Date()
+                }
+            });
+            return u;
+        });
+        try {
+            // Get org name
+            const org = await prisma.organization.findUnique({ where: { OrgId: orgId } });
+            await sendUserCredentialsEmail(String(email), String(password), String(name), org?.Name || 'SamaySafar', String(role));
+        }
+        catch (emailErr) {
+            console.warn('User created but failed to send email:', emailErr);
+        }
+        res.status(201).json({ message: 'User created successfully', user: newUser });
+    }
+    catch (err) {
+        console.error(err);
+        res.status(500).json({ message: 'Error creating user', error: err.message });
+    }
+};
+export const listUsers = async (req, res) => {
+    try {
+        const authHeader = req.headers.authorization;
+        if (!authHeader || !authHeader.startsWith('Bearer ')) {
+            return res.status(401).json({ message: 'No token' });
+        }
+        const token = authHeader.split(' ')[1];
+        const payload = jwt.verify(token, JWT_SECRET);
+        const orgId = Number(payload.orgId || 0);
+        const role = req.query.role;
+        const where = { OrgId: orgId };
+        if (role)
+            where.Role = role.toLowerCase();
+        else
+            where.Role = { in: ['student', 'parent', 'driver'] };
+        const users = await prisma.users.findMany({
+            where,
+            orderBy: { Name: 'asc' },
+            include: {
+                parent: { select: { Name: true } },
+                assignedRoute: { select: { Name: true } }
+            }
+        });
+        const mapped = users.map(u => ({
+            id: u.UserId.toString(),
+            name: u.Name,
+            email: u.Email,
+            phone: u.Phone,
+            role: u.Role,
+            parentId: u.ParentId,
+            parentName: u.parent?.Name || null,
+            routeId: u.RouteId,
+            routeName: u.assignedRoute?.Name || null
+        }));
+        return res.status(200).json({ users: mapped });
+    }
+    catch (err) {
+        return res.status(500).json({ message: 'Error listing users', error: err.message });
+    }
+};
+export const editProfile = async (req, res) => {
+    try {
+        const authHeader = req.headers.authorization;
+        if (!authHeader || !authHeader.startsWith('Bearer ')) {
+            return res.status(401).json({ message: 'No token' });
+        }
+        const token = authHeader.split(' ')[1];
+        const payload = jwt.verify(token, JWT_SECRET);
+        const userId = Number(payload.userId || 0);
+        if (!userId)
+            return res.status(401).json({ message: 'Invalid userId' });
+        const { name, phone, profileImage } = req.body;
+        const file = req.file;
+        let processedProfileImage = profileImage;
+        if (file && file.buffer) {
+            processedProfileImage = `data:${file.mimetype};base64,${file.buffer.toString('base64')}`;
+        }
+        const updated = await prisma.users.update({
+            where: { UserId: userId },
+            data: {
+                ...(name ? { Name: name } : {}),
+                ...(phone ? { Phone: phone } : {}),
+                ...(processedProfileImage ? { ProfileImage: processedProfileImage } : {})
+            }
+        });
+        return res.status(200).json({ message: 'Profile updated', user: updated });
+    }
+    catch (err) {
+        return res.status(500).json({ message: 'Error updating profile', error: err.message });
+    }
+};
+export const editUser = async (req, res) => {
+    try {
+        const authHeader = req.headers.authorization;
+        if (!authHeader || !authHeader.startsWith('Bearer ')) {
+            return res.status(401).json({ message: 'No token' });
+        }
+        const token = authHeader.split(' ')[1];
+        const payload = jwt.verify(token, JWT_SECRET);
+        if (!isAdminUser(payload))
+            return res.status(403).json({ message: 'Only admin can edit users' });
+        const targetId = Number(req.params.id);
+        const orgIdFromToken = Number(payload.orgId || 0);
+        const { name, email, phone, parentId, routeId } = req.body;
+        const existing = await prisma.users.findUnique({ where: { UserId: targetId } });
+        if (!existing || existing.OrgId !== orgIdFromToken) {
+            return res.status(404).json({ message: 'User not found' });
+        }
+        const updateData = {};
+        if (name)
+            updateData.Name = name;
+        if (email)
+            updateData.Email = email;
+        if (phone)
+            updateData.Phone = phone;
+        // Convert undefined to null or omit to satisfy exactOptionalPropertyTypes: true
+        if (parentId !== undefined) {
+            updateData.ParentId = parentId ? Number(parentId) : null;
+        }
+        if (routeId !== undefined) {
+            updateData.RouteId = routeId ? Number(routeId) : null;
+        }
+        const updated = await prisma.users.update({
+            where: { UserId: targetId },
+            data: updateData
+        });
+        return res.status(200).json({ message: 'User updated', user: updated });
+    }
+    catch (err) {
+        return res.status(500).json({ message: 'Error updating user', error: err.message });
+    }
+};
+export const deleteUser = async (req, res) => {
+    try {
+        const authHeader = req.headers.authorization;
+        if (!authHeader || !authHeader.startsWith('Bearer ')) {
+            return res.status(401).json({ message: 'No token' });
+        }
+        const token = authHeader.split(' ')[1];
+        const payload = jwt.verify(token, JWT_SECRET);
+        if (!isAdminUser(payload))
+            return res.status(403).json({ message: 'Only admin can delete users' });
+        const targetId = Number(req.params.id);
+        const orgIdFromToken = Number(payload.orgId || 0);
+        const existing = await prisma.users.findUnique({ where: { UserId: targetId } });
+        if (!existing || existing.OrgId !== orgIdFromToken) {
+            return res.status(404).json({ message: 'User not found' });
+        }
+        await prisma.$transaction(async (tx) => {
+            await tx.credentials.deleteMany({ where: { UserId: targetId } });
+            await tx.userCreationAudit.deleteMany({ where: { CreatedUserId: targetId } });
+            await tx.users.delete({ where: { UserId: targetId } });
+        });
+        return res.status(200).json({ message: 'User deleted' });
+    }
+    catch (err) {
+        return res.status(500).json({ message: 'Error deleting user', error: err.message });
+    }
+};
+export const forgotPassword = async (req, res) => {
+    try {
+        const { email } = req.body;
+        const user = await prisma.users.findUnique({ where: { Email: email } });
+        if (!user) {
+            return res.status(404).json({ message: 'User with this email does not exist' });
+        }
+        const otp = generateOTP();
+        const expiresAt = new Date(Date.now() + OTP_EXPIRY_MINUTES * 60000);
+        await prisma.passwordReset.create({
+            data: {
+                Email: email,
+                OTP: otp,
+                OTPExpiresAt: expiresAt,
+            },
+        });
+        await sendPasswordResetOTPEmail(email, otp, user.Name);
+        return res.status(200).json({ message: 'Password reset OTP sent to email' });
+    }
     catch (error) {
-        console.error('Error during login:', error);
-        return res.status(500).json({ message: 'Error during login', error: error.message });
+        console.error('ForgotPassword error:', error);
+        return res.status(500).json({ message: 'Error sending password reset email', error: error.message });
+    }
+};
+export const resetPassword = async (req, res) => {
+    try {
+        const { email, code, password, newPassword } = req.body;
+        const finalPassword = password || newPassword;
+        if (!finalPassword) {
+            return res.status(400).json({ message: 'New password is required' });
+        }
+        const passwordReset = await prisma.passwordReset.findFirst({
+            where: {
+                Email: email,
+                OTP: code,
+                Used: false,
+                OTPExpiresAt: { gt: new Date() },
+            },
+            orderBy: { RequestedAt: 'desc' },
+        });
+        if (!passwordReset) {
+            return res.status(400).json({ message: 'Invalid or expired OTP' });
+        }
+        const user = await prisma.users.findUnique({ where: { Email: email } });
+        if (!user) {
+            return res.status(404).json({ message: 'User not found' });
+        }
+        const passwordHash = await bcrypt.hash(finalPassword, SALT_ROUNDS);
+        await prisma.$transaction(async (tx) => {
+            await tx.credentials.update({
+                where: { UserId: user.UserId },
+                data: { PasswordHash: passwordHash },
+            });
+            await tx.passwordReset.update({
+                where: { ResetId: passwordReset.ResetId },
+                data: { Used: true },
+            });
+        });
+        return res.status(200).json({ message: 'Password reset successful. You can now login.' });
+    }
+    catch (error) {
+        console.error('ResetPassword error:', error);
+        return res.status(500).json({ message: 'Error resetting password', error: error.message });
+    }
+};
+/**
+ * Get Notifications - GET /api/users/notifications
+ */
+export const getNotifications = async (req, res) => {
+    try {
+        const authHeader = req.headers.authorization;
+        if (!authHeader || !authHeader.startsWith('Bearer ')) {
+            return res.status(401).json({ message: 'Authorization header missing' });
+        }
+        const token = authHeader.split(' ')[1];
+        const payload = jwt.verify(token, JWT_SECRET);
+        const userId = Number(payload.userId);
+        const notifications = await prisma.notification.findMany({
+            where: { UserId: userId },
+            orderBy: { NotificationId: 'desc' },
+            take: 20
+        });
+        return res.status(200).json({ notifications });
+    }
+    catch (error) {
+        console.error('getNotifications error:', error);
+        return res.status(500).json({ message: 'Error fetching notifications', error: error.message });
     }
 };
 //# sourceMappingURL=userController.js.map
