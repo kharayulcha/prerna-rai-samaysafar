@@ -182,11 +182,16 @@ export const login = async (req: Request, res: Response) => {
       include: {
         organization: true,
         parent: { select: { Name: true } },
+        assignedBus: { select: { BusNumber: true } },
         assignedRoute: {
           include: {
             driverAssignments: {
               where: { Status: 'active' },
-              include: { driver: { select: { Name: true, Phone: true } } }
+              include: {
+                driver: {
+                  include: { assignedBus: { select: { BusId: true, BusNumber: true } } }
+                }
+              }
             },
             busAssignments: {
               where: { Status: 'active' },
@@ -194,13 +199,31 @@ export const login = async (req: Request, res: Response) => {
             }
           }
         },
+        driverRoutes: {
+          where: { Status: 'active' },
+          include: {
+            route: {
+              include: {
+                busAssignments: {
+                  where: { Status: 'active' },
+                  include: { bus: { select: { BusNumber: true } } }
+                }
+              }
+            }
+          }
+        },
         children: {
           include: {
+            assignedBus: { select: { BusNumber: true } },
             assignedRoute: {
               include: {
                 driverAssignments: {
                   where: { Status: 'active' },
-                  include: { driver: { select: { Name: true, Phone: true } } }
+                  include: {
+                    driver: {
+                      include: { assignedBus: { select: { BusId: true, BusNumber: true } } }
+                    }
+                  }
                 },
                 busAssignments: {
                   where: { Status: 'active' },
@@ -220,6 +243,28 @@ export const login = async (req: Request, res: Response) => {
     const valid = await bcrypt.compare(password, creds.PasswordHash);
     if (!valid) return res.status(401).json({ message: 'Invalid credentials' });
 
+    // Extract route info for drivers if not directly assigned
+    let routeId = user.RouteId;
+    let busId = user.BusId || (user as any).assignedRoute?.busAssignments[0]?.BusId || (user as any).assignedRoute?.driverAssignments[0]?.driver?.assignedBus?.BusId || null;
+    let routeName = (user as any).assignedRoute?.Name || null;
+    let busNumber = (user as any).assignedRoute?.busAssignments[0]?.bus?.BusNumber || (user as any).assignedRoute?.driverAssignments[0]?.driver?.assignedBus?.BusNumber || (user as any).assignedBus?.BusNumber || null;
+
+    if (user.Role?.toLowerCase() === 'driver' && (!routeId || !busId) && user.driverRoutes.length > 0) {
+      const primaryAssignment = user.driverRoutes[0];
+      if (primaryAssignment) {
+        if (!routeId) {
+          routeId = primaryAssignment.RouteId;
+          routeName = primaryAssignment.route.Name;
+        }
+        if (!busId) {
+          busId = primaryAssignment.route.busAssignments[0]?.BusId || null;
+          if (!busNumber) {
+            busNumber = primaryAssignment.route.busAssignments[0]?.bus?.BusNumber || (user as any).assignedBus?.BusNumber || null;
+          }
+        }
+      }
+    }
+
     const token = jwt.sign(
       {
         userId: user.UserId,
@@ -229,19 +274,20 @@ export const login = async (req: Request, res: Response) => {
         name: user.Name,
         phone: user.Phone,
         address: user.organization?.Address || '',
-        routeId: user.RouteId,
-        busId: user.BusId,
+        routeId: routeId,
+        busId: busId,
         parentName: (user as any).parent?.Name || null,
-        routeName: (user as any).assignedRoute?.Name || null,
+        routeName: routeName,
         driverName: (user as any).assignedRoute?.driverAssignments[0]?.driver?.Name || null,
         driverPhone: (user as any).assignedRoute?.driverAssignments[0]?.driver?.Phone || null,
-        busNumber: (user as any).assignedRoute?.busAssignments[0]?.bus?.BusNumber || null,
+        busNumber: busNumber,
         children: user.children.map(c => ({
           name: c.Name,
           routeName: (c as any).assignedRoute?.Name || null,
           driverName: (c as any).assignedRoute?.driverAssignments[0]?.driver?.Name || null,
           driverPhone: (c as any).assignedRoute?.driverAssignments[0]?.driver?.Phone || null,
-          busNumber: (c as any).assignedRoute?.busAssignments[0]?.bus?.BusNumber || null,
+          busId: (c as any).assignedRoute?.busAssignments[0]?.BusId || (c as any).assignedRoute?.driverAssignments[0]?.driver?.assignedBus?.BusId || c.BusId || null,
+          busNumber: (c as any).assignedRoute?.busAssignments[0]?.bus?.BusNumber || (c as any).assignedRoute?.driverAssignments[0]?.driver?.assignedBus?.BusNumber || (c as any).assignedBus?.BusNumber || null,
         }))
       },
       JWT_SECRET as string,
@@ -259,20 +305,21 @@ export const login = async (req: Request, res: Response) => {
         email: user.Email,
         phone: user.Phone,
         address: user.organization?.Address || '',
-        routeId: user.RouteId,
-        busId: user.BusId,
+        routeId: routeId,
+        busId: busId,
         profileImage: user.ProfileImage,
         parentName: (user as any).parent?.Name || null,
-        routeName: (user as any).assignedRoute?.Name || null,
+        routeName: routeName,
         driverName: (user as any).assignedRoute?.driverAssignments[0]?.driver?.Name || null,
         driverPhone: (user as any).assignedRoute?.driverAssignments[0]?.driver?.Phone || null,
-        busNumber: (user as any).assignedRoute?.busAssignments[0]?.bus?.BusNumber || null,
+        busNumber: busNumber,
         children: user.children.map(c => ({
           name: c.Name,
           routeName: (c as any).assignedRoute?.Name || null,
           driverName: (c as any).assignedRoute?.driverAssignments[0]?.driver?.Name || null,
           driverPhone: (c as any).assignedRoute?.driverAssignments[0]?.driver?.Phone || null,
-          busNumber: (c as any).assignedRoute?.busAssignments[0]?.bus?.BusNumber || null,
+          busId: (c as any).assignedRoute?.busAssignments[0]?.BusId || (c as any).assignedRoute?.driverAssignments[0]?.driver?.assignedBus?.BusId || c.BusId || null,
+          busNumber: (c as any).assignedRoute?.busAssignments[0]?.bus?.BusNumber || (c as any).assignedRoute?.driverAssignments[0]?.driver?.assignedBus?.BusNumber || (c as any).assignedBus?.BusNumber || null,
         })),
         organization: user.organization ? {
           name: user.organization.Name,
@@ -456,8 +503,14 @@ export const editUser = async (req: Request, res: Response) => {
     if (name) updateData.Name = name;
     if (email) updateData.Email = email;
     if (phone) updateData.Phone = phone;
-    if (parentId !== undefined) updateData.ParentId = parentId ? Number(parentId) : null;
-    if (routeId !== undefined) updateData.RouteId = routeId ? Number(routeId) : null;
+
+    // Convert undefined to null or omit to satisfy exactOptionalPropertyTypes: true
+    if (parentId !== undefined) {
+      updateData.ParentId = parentId ? Number(parentId) : null;
+    }
+    if (routeId !== undefined) {
+      updateData.RouteId = routeId ? Number(routeId) : null;
+    }
 
     const updated = await prisma.users.update({
       where: { UserId: targetId },
