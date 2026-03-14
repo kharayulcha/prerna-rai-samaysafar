@@ -63,7 +63,7 @@ export const startTrip = async (req: Request, res: Response) => {
                 data: {
                     UserId: student.UserId,
                     Type: 'trip_started',
-                    Message: `Your bus for route ${trip.route.Name} has started!`,
+                    Message: `Bus for route ${trip.route.Name} has departed from the college`,
                     TripId: trip.TripId,
                 }
             });
@@ -72,7 +72,7 @@ export const startTrip = async (req: Request, res: Response) => {
         // Emit real-time notification
         io.to(`route-${routeId}`).emit('notification', {
             type: 'trip_started',
-            message: `Bus for route ${trip.route.Name} has started!`,
+            message: `Bus for route ${trip.route.Name} has departed from the college`,
             routeId: routeId,
             tripId: trip.TripId
         });
@@ -113,7 +113,7 @@ export const endTrip = async (req: Request, res: Response) => {
                 data: {
                     UserId: student.UserId,
                     Type: 'trip_ended',
-                    Message: `Bus for route ${trip.route.Name} has arrived/finished.`,
+                    Message: `Trip for route ${trip.route.Name} has ended`,
                     TripId: trip.TripId,
                 }
             });
@@ -122,7 +122,7 @@ export const endTrip = async (req: Request, res: Response) => {
         // Notify users
         io.to(`route-${trip.RouteId}`).emit('notification', {
             type: 'trip_ended',
-            message: `Bus for route ${trip.route.Name} has arrived/finished.`,
+            message: `Trip for route ${trip.route.Name} has ended`,
             routeId: trip.RouteId,
             tripId: trip.TripId
         });
