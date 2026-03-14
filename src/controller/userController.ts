@@ -1,8 +1,10 @@
 import bcrypt from 'bcrypt';
 import type { Request, Response } from 'express';
 import jwt from 'jsonwebtoken';
+import { io } from '../app.js';
 import prisma from '../model/index.js';
 import { generateOTP, sendOTPEmail, sendPasswordResetOTPEmail, sendUserCredentialsEmail } from '../utils/emailService.js';
+import { info, error as logError } from '../utils/logger.js';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'samaysafar_secret_key';
 const OTP_EXPIRY_MINUTES = 10;
@@ -42,7 +44,7 @@ export const registerOrganization = async (req: Request, res: Response) => {
       }
     }
 
-    const existingOrg = await prisma.organization.findUnique({ where: { Email: email } });
+    const existingOrg = await prisma.organization.findUnique({ where: { Email: email.toLowerCase() } });
     if (existingOrg) {
       return res.status(400).json({ message: 'Organization already exists.' });
     }
@@ -53,13 +55,19 @@ export const registerOrganization = async (req: Request, res: Response) => {
     let logoBuffer: Buffer | null = null;
     if (file && file.buffer) {
       logoBuffer = file.buffer;
+      if (logoBuffer) {
+        info('[Register] Logo file received, size:', logoBuffer.length, 'bytes');
+      }
     }
 
     const otp = generateOTP();
     const expiresAt = new Date(Date.now() + OTP_EXPIRY_MINUTES * 60000);
 
+    // Normalize email to lowercase
+    const normalizedEmail = email.toLowerCase().trim();
+
     await prisma.pendingAdmin.upsert({
-      where: { Email: email },
+      where: { Email: normalizedEmail },
       update: {
         Name: name,
         Phone: phone,
@@ -71,7 +79,7 @@ export const registerOrganization = async (req: Request, res: Response) => {
       },
       create: {
         Name: name,
-        Email: email,
+        Email: normalizedEmail,
         Phone: phone,
         PasswordHash: passwordHash,
         Address: address,
@@ -80,12 +88,13 @@ export const registerOrganization = async (req: Request, res: Response) => {
         OTPExpiresAt: expiresAt,
       }
     });
+    info('[Register] Pending admin created/updated with logo:', logoBuffer ? `${logoBuffer.length} bytes` : 'null');
 
-    await sendOTPEmail(email, otp, name);
+    await sendOTPEmail(normalizedEmail, otp, name);
     return res.status(200).json({ message: 'Registration successful. Verify OTP sent to email.' });
 
   } catch (error: any) {
-    console.error('Registration error:', error);
+    logError('Registration error:', error);
     res.status(500).json({ message: 'Error registering organization', error: error.message });
   }
 };
@@ -93,14 +102,43 @@ export const registerOrganization = async (req: Request, res: Response) => {
 export const verifyOrganizationOTP = async (req: Request, res: Response) => {
   const { email, code } = req.body;
   try {
-    const pending = await prisma.pendingAdmin.findUnique({ where: { Email: email } });
-    if (!pending) return res.status(404).json({ message: 'Registration not found' });
+    info(`[OTP Verify] Attempting to verify OTP for email: ${email}, code: ${code}`);
+
+    // Normalize email (lowercase for case-insensitive matching)
+    const normalizedEmail = email.toLowerCase().trim();
+    const pending = await prisma.pendingAdmin.findUnique({
+      where: { Email: normalizedEmail }
+    });
+
+    if (!pending) {
+      logError(`[OTP Verify] No pending registration found for email: ${normalizedEmail}`);
+      return res.status(404).json({ message: 'Registration not found' });
+    }
+
+    info(`[OTP Verify] Found pending registration. Verified: ${pending.Verified}, OTP: ${pending.OTP}, OTPExpiresAt: ${pending.OTPExpiresAt}`);
+
     if (pending.Verified) return res.status(400).json({ message: 'Already verified' });
-    if (pending.OTP !== code) return res.status(400).json({ message: 'Invalid OTP' });
-    if (new Date() > pending.OTPExpiresAt) return res.status(400).json({ message: 'OTP expired' });
+
+    // Normalize OTP comparison: convert both to string and trim whitespace
+    const normalizedCode = String(code).trim();
+    const normalizedOTP = String(pending.OTP).trim();
+
+    info(`[OTP Verify] Comparing OTP - stored: '${normalizedOTP}' (type: ${typeof pending.OTP}), provided: '${normalizedCode}' (type: ${typeof code})`);
+
+    if (normalizedOTP !== normalizedCode) {
+      logError(`[OTP Verify] OTP mismatch: expected '${normalizedOTP}', got '${normalizedCode}'`);
+      return res.status(400).json({ message: 'Invalid OTP' });
+    }
+
+    const now = new Date();
+    if (now > pending.OTPExpiresAt) {
+      logError(`[OTP Verify] OTP expired. Now: ${now}, ExpiresAt: ${pending.OTPExpiresAt}`);
+      return res.status(400).json({ message: 'OTP expired' });
+    }
 
     // Transaction to create Org and Admin User
     await prisma.$transaction(async (tx) => {
+      info('[OTP Verify] Creating organization with logo:', pending.Logo ? `${Buffer.from(pending.Logo).length} bytes` : 'null');
       const org = await tx.organization.create({
         data: {
           Name: pending.Name,
@@ -110,6 +148,7 @@ export const verifyOrganizationOTP = async (req: Request, res: Response) => {
           Logo: pending.Logo ? new Uint8Array(pending.Logo) : null,
         }
       });
+      info('[OTP Verify] Organization created:', org.OrgId);
 
       // ProfileImage in Users is String?
       // If we have logo bytes, we can convert to base64 data URL for User profile image string
@@ -156,18 +195,20 @@ export const verifyOrganizationOTP = async (req: Request, res: Response) => {
 export const resendOrganizationOTP = async (req: Request, res: Response) => {
   const { email } = req.body;
   try {
-    const pending = await prisma.pendingAdmin.findUnique({ where: { Email: email } });
+    // Normalize email to lowercase
+    const normalizedEmail = email.toLowerCase().trim();
+    const pending = await prisma.pendingAdmin.findUnique({ where: { Email: normalizedEmail } });
     if (!pending) return res.status(404).json({ message: 'User not found' });
 
     const otp = generateOTP();
     const expiresAt = new Date(Date.now() + OTP_EXPIRY_MINUTES * 60000);
 
     await prisma.pendingAdmin.update({
-      where: { Email: email },
+      where: { Email: normalizedEmail },
       data: { OTP: otp, OTPExpiresAt: expiresAt }
     });
 
-    await sendOTPEmail(email, otp, pending.Name);
+    await sendOTPEmail(normalizedEmail, otp, pending.Name);
     return res.status(200).json({ message: 'OTP resent.' });
   } catch (err: any) {
     return res.status(500).json({ message: 'Error resending OTP', error: err.message });
@@ -180,22 +221,17 @@ export const login = async (req: Request, res: Response) => {
     const user = await prisma.users.findUnique({
       where: { Email: email },
       include: {
-        organization: true,
+        organization: { select: { OrgId: true, Name: true, Email: true, Phone: true, Address: true, Logo: true } },
         parent: { select: { Name: true } },
-        assignedBus: { select: { BusNumber: true } },
         assignedRoute: {
           include: {
             driverAssignments: {
               where: { Status: 'active' },
-              include: {
-                driver: {
-                  include: { assignedBus: { select: { BusId: true, BusNumber: true } } }
-                }
-              }
+              include: { driver: { select: { Name: true, Phone: true } } }
             },
             busAssignments: {
               where: { Status: 'active' },
-              include: { bus: { select: { BusNumber: true } } }
+              include: { bus: { select: { BusNumber: true, BusId: true } } }
             }
           }
         },
@@ -219,15 +255,11 @@ export const login = async (req: Request, res: Response) => {
               include: {
                 driverAssignments: {
                   where: { Status: 'active' },
-                  include: {
-                    driver: {
-                      include: { assignedBus: { select: { BusId: true, BusNumber: true } } }
-                    }
-                  }
+                  include: { driver: { select: { Name: true, Phone: true } } }
                 },
                 busAssignments: {
                   where: { Status: 'active' },
-                  include: { bus: { select: { BusNumber: true } } }
+                  include: { bus: { select: { BusNumber: true, BusId: true } } }
                 }
               }
             }
@@ -265,6 +297,14 @@ export const login = async (req: Request, res: Response) => {
       }
     }
 
+    const isDriver = String(user.Role || '').toLowerCase() === 'driver';
+    const derivedRouteId = isDriver
+      ? user.RouteId ?? user.driverRoutes?.[0]?.RouteId ?? null
+      : user.RouteId ?? null;
+    const derivedBusId = isDriver
+      ? user.BusId ?? (user as any).assignedRoute?.busAssignments[0]?.bus?.BusId ?? null
+      : user.BusId ?? null;
+
     const token = jwt.sign(
       {
         userId: user.UserId,
@@ -274,20 +314,20 @@ export const login = async (req: Request, res: Response) => {
         name: user.Name,
         phone: user.Phone,
         address: user.organization?.Address || '',
-        routeId: routeId,
-        busId: busId,
+        routeId: user.RouteId,
+        busId: user.BusId,
         parentName: (user as any).parent?.Name || null,
         routeName: routeName,
         driverName: (user as any).assignedRoute?.driverAssignments[0]?.driver?.Name || null,
         driverPhone: (user as any).assignedRoute?.driverAssignments[0]?.driver?.Phone || null,
-        busNumber: busNumber,
+        busNumber: (user as any).assignedRoute?.busAssignments[0]?.bus?.BusNumber || null,
         children: user.children.map(c => ({
           name: c.Name,
+          routeId: c.RouteId || null,
           routeName: (c as any).assignedRoute?.Name || null,
           driverName: (c as any).assignedRoute?.driverAssignments[0]?.driver?.Name || null,
           driverPhone: (c as any).assignedRoute?.driverAssignments[0]?.driver?.Phone || null,
-          busId: (c as any).assignedRoute?.busAssignments[0]?.BusId || (c as any).assignedRoute?.driverAssignments[0]?.driver?.assignedBus?.BusId || c.BusId || null,
-          busNumber: (c as any).assignedRoute?.busAssignments[0]?.bus?.BusNumber || (c as any).assignedRoute?.driverAssignments[0]?.driver?.assignedBus?.BusNumber || (c as any).assignedBus?.BusNumber || null,
+          busNumber: (c as any).assignedRoute?.busAssignments[0]?.bus?.BusNumber || null,
         }))
       },
       JWT_SECRET as string,
@@ -305,36 +345,58 @@ export const login = async (req: Request, res: Response) => {
         email: user.Email,
         phone: user.Phone,
         address: user.organization?.Address || '',
-        routeId: routeId,
-        busId: busId,
+        routeId: user.RouteId,
+        busId: user.BusId,
         profileImage: user.ProfileImage,
         parentName: (user as any).parent?.Name || null,
         routeName: routeName,
         driverName: (user as any).assignedRoute?.driverAssignments[0]?.driver?.Name || null,
         driverPhone: (user as any).assignedRoute?.driverAssignments[0]?.driver?.Phone || null,
-        busNumber: busNumber,
+        busNumber: (user as any).assignedRoute?.busAssignments[0]?.bus?.BusNumber || null,
         children: user.children.map(c => ({
           name: c.Name,
+          routeId: c.RouteId || null,
           routeName: (c as any).assignedRoute?.Name || null,
           driverName: (c as any).assignedRoute?.driverAssignments[0]?.driver?.Name || null,
           driverPhone: (c as any).assignedRoute?.driverAssignments[0]?.driver?.Phone || null,
-          busId: (c as any).assignedRoute?.busAssignments[0]?.BusId || (c as any).assignedRoute?.driverAssignments[0]?.driver?.assignedBus?.BusId || c.BusId || null,
-          busNumber: (c as any).assignedRoute?.busAssignments[0]?.bus?.BusNumber || (c as any).assignedRoute?.driverAssignments[0]?.driver?.assignedBus?.BusNumber || (c as any).assignedBus?.BusNumber || null,
+          busNumber: (c as any).assignedRoute?.busAssignments[0]?.bus?.BusNumber || null,
         })),
         organization: user.organization ? {
           name: user.organization.Name,
-          logo: user.organization.Logo ? `data:image/png;base64,${Buffer.from(user.organization.Logo).toString('base64')}` : null,
+          logo: user.organization.Logo ? (() => {
+            try {
+              info('[Login] Organization logo found, type:', typeof user.organization.Logo, 'is Buffer:', Buffer.isBuffer(user.organization.Logo));
+              // Handle both Buffer and Uint8Array
+              let logoBuffer: Buffer;
+              if (Buffer.isBuffer(user.organization.Logo)) {
+                logoBuffer = user.organization.Logo;
+              } else if (user.organization.Logo instanceof Uint8Array) {
+                logoBuffer = Buffer.from(user.organization.Logo);
+              } else if (typeof user.organization.Logo === 'object') {
+                // Handle object format from Prisma
+                logoBuffer = Buffer.from(Object.values(user.organization.Logo as any));
+              } else {
+                throw new Error('Unknown logo format');
+              }
+              const base64Logo = logoBuffer.toString('base64');
+              info('[Login] Logo converted to base64, length:', base64Logo.length);
+              return `data:image/png;base64,${base64Logo}`;
+            } catch (err) {
+              logError('[Login] Error converting logo to base64:', err);
+              return null;
+            }
+          })() : (() => { info('[Login] Organization logo is null'); return null; })(),
           address: user.organization.Address
         } : null
       }
     });
 
   } catch (err: any) {
-    console.error(err);
+    logError(err);
     return res.status(500).json({ message: 'Error logging in', error: err.message });
   }
 };
-
+// code for creating user and assigning parents 
 export const createUser = async (req: Request, res: Response) => {
   try {
     const authHeader = req.headers.authorization;
@@ -543,8 +605,42 @@ export const deleteUser = async (req: Request, res: Response) => {
     }
 
     await prisma.$transaction(async (tx) => {
-      await tx.credentials.deleteMany({ where: { UserId: targetId } });
+      // 1. Delete notifications
+      await tx.notification.deleteMany({ where: { UserId: targetId } });
+
+      // 2. Delete audit logs (both as created user and as admin who created others)
       await tx.userCreationAudit.deleteMany({ where: { CreatedUserId: targetId } });
+      await tx.userCreationAudit.deleteMany({ where: { AdminUserId: targetId } });
+
+      // 3. Delete driver assignments
+      await tx.routeDriverAssignment.deleteMany({ where: { DriverId: targetId } });
+
+      // 4. Delete DriverAttendance record
+      await tx.driverAttendance.deleteMany({ where: { DriverId: targetId } });
+
+      // 5. Delete Payments
+      await tx.payment.deleteMany({ where: { ParentId: targetId } });
+
+      // 6. Delete Bills
+      await tx.bill.deleteMany({
+        where: {
+          OR: [
+            { StudentId: targetId },
+            { ParentId: targetId }
+          ]
+        }
+      });
+
+      // 7. Handle Student references - if target is a parent, students point to them
+      await tx.users.updateMany({
+        where: { ParentId: targetId },
+        data: { ParentId: null }
+      });
+
+      // 8. Delete Credentials
+      await tx.credentials.deleteMany({ where: { UserId: targetId } });
+
+      // 9. Finally Delete User
       await tx.users.delete({ where: { UserId: targetId } });
     });
 
@@ -645,16 +741,222 @@ export const getNotifications = async (req: Request, res: Response) => {
     const payload = jwt.verify(token as string, JWT_SECRET!) as any;
     const userId = Number(payload.userId);
 
-    const notifications = await prisma.notification.findMany({
-      where: { UserId: userId },
-      orderBy: { NotificationId: 'desc' },
-      take: 20
-    });
+    // Use raw query to ensure CreatedAt is always included
+    const notifications = await prisma.$queryRaw`
+      SELECT "NotificationId", "UserId", "Type", "Message", "TripId", "Read", "CreatedAt"
+      FROM "Notification"
+      WHERE "UserId" = ${userId}
+      ORDER BY "NotificationId" DESC
+      LIMIT 20
+    ` as any[];
 
     return res.status(200).json({ notifications });
   } catch (error: any) {
     console.error('getNotifications error:', error);
     return res.status(500).json({ message: 'Error fetching notifications', error: error.message });
+  }
+};
+
+/**
+ * Mark a Notification as Read - PATCH /api/users/notifications/:notificationId/read
+ */
+export const markNotificationRead = async (req: Request, res: Response) => {
+  try {
+    const authHeader = req.headers.authorization as string | undefined;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ message: 'Authorization header missing' });
+    }
+
+    const token = authHeader.split(' ')[1];
+    const payload = jwt.verify(token as string, JWT_SECRET!) as any;
+    const userId = Number(payload.userId);
+
+    const { notificationId } = req.params;
+    if (!notificationId || isNaN(Number(notificationId))) {
+      return res.status(400).json({ message: 'Valid notification ID is required' });
+    }
+
+    const notifId = Number(notificationId);
+
+    // Only allow marking your own notification as read
+    await prisma.$executeRaw`
+      UPDATE "Notification"
+      SET "Read" = true
+      WHERE "NotificationId" = ${notifId} AND "UserId" = ${userId}
+    `;
+
+    return res.status(200).json({ message: 'Notification marked as read' });
+  } catch (error: any) {
+    console.error('markNotificationRead error:', error);
+    return res.status(500).json({ message: 'Error updating notification', error: error.message });
+  }
+};
+
+/**
+ * Send a notice to all users in the organization
+ */
+export const sendNotice = async (req: Request, res: Response) => {
+  try {
+    const authHeader = req.headers.authorization as string | undefined;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ message: 'Authorization header missing' });
+    }
+
+    const token = authHeader.split(' ')[1];
+    const payload = jwt.verify(token as string, JWT_SECRET!) as any;
+
+    if (!isAdminUser(payload)) {
+      return res.status(403).json({ message: 'Only admins can send notices' });
+    }
+
+    const orgId = Number(payload.orgId);
+    if (!orgId) return res.status(400).json({ message: 'Organization context not found' });
+
+    const { header, message } = req.body;
+    if (!header || !message) {
+      return res.status(400).json({ message: 'Header and message are required' });
+    }
+
+    // Get all users in the organization (parents, drivers, admins, etc.)
+    const directUsers = await prisma.users.findMany({
+      where: { OrgId: orgId },
+      select: { UserId: true }
+    });
+
+    // Get all students whose parents belong to this organization
+    const students = await prisma.users.findMany({
+      where: {
+        parent: {
+          OrgId: orgId
+        }
+      },
+      select: { UserId: true }
+    });
+
+    // Combine all user IDs and deduplicate using Set
+    const uniqueUserIds = Array.from(new Set([
+      ...directUsers.map(u => u.UserId),
+      ...students.map(u => u.UserId)
+    ]));
+
+    const fullMessage = `${header}: ${message}`;
+
+    // Create notifications for all unique users
+    await prisma.notification.createMany({
+      data: uniqueUserIds.map(userId => ({
+        UserId: userId,
+        Type: 'notice',
+        Message: fullMessage,
+        Read: false
+      }))
+    });
+
+    // Send real-time notification via socket
+    // Emit noticeAdded event so all users refetch their notifications
+    io.emit('noticeAdded', {
+      orgId: orgId
+    });
+
+    return res.status(200).json({ message: 'Notice sent successfully to all users' });
+  } catch (error: any) {
+    console.error('sendNotice error:', error);
+    return res.status(500).json({ message: 'Error sending notice', error: error.message });
+  }
+};
+
+/**
+ * Delete a Notification - DELETE /api/users/notifications/:notificationId
+ * Only admins can delete notifications
+ */
+export const deleteNotification = async (req: Request, res: Response) => {
+  try {
+    const authHeader = req.headers.authorization as string | undefined;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ message: 'Authorization header missing' });
+    }
+
+    const token = authHeader.split(' ')[1];
+    const payload = jwt.verify(token as string, JWT_SECRET!) as any;
+
+    // Check if user is admin
+    if (!isAdminUser(payload)) {
+      return res.status(403).json({ message: 'Only admins can delete notifications' });
+    }
+
+    const { notificationId } = req.params;
+    if (!notificationId || isNaN(Number(notificationId))) {
+      return res.status(400).json({ message: 'Valid notification ID is required' });
+    }
+
+    const notificationIdNum = Number(notificationId);
+
+    // Fetch the notification first to check its type and message
+    const notificationToDelete = await prisma.notification.findUnique({
+      where: { NotificationId: notificationIdNum }
+    });
+
+    if (!notificationToDelete) {
+      return res.status(404).json({ message: 'Notification not found' });
+    }
+
+    if (notificationToDelete.Type === 'notice') {
+      // If it's a notice, delete all notices with the same message for this organization
+      const orgId = Number(payload.orgId);
+      if (!orgId) {
+        return res.status(400).json({ message: 'Organization context not found' });
+      }
+
+      // Get all org users to ensure we only delete within this org
+      const directUsers = await prisma.users.findMany({
+        where: { OrgId: orgId },
+        select: { UserId: true }
+      });
+
+      const students = await prisma.users.findMany({
+        where: { parent: { OrgId: orgId } },
+        select: { UserId: true }
+      });
+
+      const orgUserIds = [...directUsers.map(u => u.UserId), ...students.map(u => u.UserId)];
+
+      const notificationsToDelete = await prisma.notification.findMany({
+        where: {
+          Type: 'notice',
+          Message: notificationToDelete.Message,
+          UserId: { in: orgUserIds }
+        }
+      });
+
+      const idsToDelete = notificationsToDelete.map(n => n.NotificationId);
+
+      if (idsToDelete.length > 0) {
+        await prisma.notification.deleteMany({
+          where: {
+            NotificationId: { in: idsToDelete }
+          }
+        });
+
+        // Notify clients to remove this notification
+        idsToDelete.forEach(id => {
+          io.emit('notificationDeleted', { notificationId: id });
+        });
+      }
+    } else {
+      // Delete a single non-notice notification
+      await prisma.notification.delete({
+        where: { NotificationId: notificationIdNum }
+      });
+
+      io.emit('notificationDeleted', { notificationId: notificationIdNum });
+    }
+
+    return res.status(200).json({ message: 'Notification deleted successfully' });
+  } catch (error: any) {
+    if (error.code === 'P2025') {
+      return res.status(404).json({ message: 'Notification not found' });
+    }
+    console.error('deleteNotification error:', error);
+    return res.status(500).json({ message: 'Error deleting notification', error: error.message });
   }
 };
 
