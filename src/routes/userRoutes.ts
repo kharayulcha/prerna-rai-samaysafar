@@ -2,6 +2,7 @@ import express from 'express';
 import multer from 'multer';
 import {
     createUser,
+    deleteNotification,
     deleteUser,
     editProfile,
     editUser,
@@ -9,9 +10,11 @@ import {
     getNotifications,
     listUsers,
     login,
+    markNotificationRead,
     registerOrganization,
     resendOrganizationOTP,
     resetPassword,
+    sendNotice,
     verifyOrganizationOTP
 } from '../controller/userController.js';
 import catchAsync from '../utils/catchAsync.js';
@@ -28,6 +31,7 @@ router.post('/organization/verify-otp', catchAsync(verifyOrganizationOTP));// US
 router.post('/organization/resend-otp', catchAsync(resendOrganizationOTP));// US-2 resend otp
 
 // User creation route (by organization)
+// code for create route
 router.post('/create', catchAsync(createUser));//US-3
 // List users route
 router.get('/list', catchAsync(listUsers));
@@ -45,7 +49,10 @@ router.put('/edit-profile', upload.single('profileImage'), catchAsync(editProfil
 router.put('/:id', catchAsync(editUser));
 router.delete('/:id', catchAsync(deleteUser));
 
-// Notification route
+// Notification routes
 router.get('/notifications', catchAsync(getNotifications));
+router.patch('/notifications/:notificationId/read', catchAsync(markNotificationRead));
+router.post('/send-notice', catchAsync(sendNotice));
+router.delete('/notifications/:notificationId', catchAsync(deleteNotification));
 
 export default router;
