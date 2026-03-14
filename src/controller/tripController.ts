@@ -2,6 +2,7 @@ import type { Request, Response } from 'express';
 import jwt from 'jsonwebtoken';
 import { io } from '../app.js';
 import prisma from '../model/index.js';
+import { error as logError } from '../utils/logger.js';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'samaysafar_secret_key';
 
@@ -79,7 +80,7 @@ export const startTrip = async (req: Request, res: Response) => {
 
         return res.status(201).json({ message: 'Trip started successfully', trip });
     } catch (error: any) {
-        console.error('Error starting trip:', error);
+        logError('Error starting trip:', error);
         return res.status(500).json({ message: 'Error starting trip', error: error.message });
     }
 };
@@ -129,7 +130,7 @@ export const endTrip = async (req: Request, res: Response) => {
 
         return res.status(200).json({ message: 'Trip ended successfully', trip });
     } catch (error: any) {
-        console.error('Error ending trip:', error);
+        logError('Error ending trip:', error);
         return res.status(500).json({ message: 'Error ending trip', error: error.message });
     }
 };
@@ -177,7 +178,7 @@ export const saveLocation = async (req: Request, res: Response) => {
 
         return res.status(200).json({ message: 'Location saved', location });
     } catch (error: any) {
-        console.error('Error saving location:', error);
+        logError('Error saving location:', error);
         return res.status(500).json({ message: 'Error saving location', error: error.message });
     }
 };
@@ -210,7 +211,7 @@ export const getActiveTrip = async (req: Request, res: Response) => {
             latestLocation: trip.locations[0] || null,
         });
     } catch (error: any) {
-        console.error('Error getting active trip:', error);
+        logError('Error getting active trip:', error);
         return res.status(500).json({ message: 'Error getting active trip', error: error.message });
     }
 };
@@ -306,7 +307,7 @@ export const getMyActiveTrip = async (req: Request, res: Response) => {
             routeId,
         });
     } catch (error: any) {
-        console.error('Error getting my active trip:', error);
+        logError('Error getting my active trip:', error);
         return res.status(500).json({ message: 'Error getting active trip', error: error.message });
     }
 };
@@ -323,7 +324,7 @@ export const getTripLocations = async (req: Request, res: Response) => {
 
         return res.status(200).json({ locations });
     } catch (error: any) {
-        console.error('Error getting trip locations:', error);
+        logError('Error getting trip locations:', error);
         return res.status(500).json({ message: 'Error getting trip locations', error: error.message });
     }
 };
