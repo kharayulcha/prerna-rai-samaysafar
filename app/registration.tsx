@@ -3,6 +3,7 @@ import * as ImagePicker from "expo-image-picker";
 import { useRouter } from "expo-router";
 import React, { useState } from "react";
 import {
+  ActivityIndicator,
   Alert,
   Image,
   KeyboardAvoidingView,
@@ -14,7 +15,6 @@ import {
   Text,
   TextInput,
   View,
-  ActivityIndicator,
 } from "react-native";
 
 const PRIMARY_BLUE = "#4FA3FF";
@@ -28,7 +28,7 @@ export default function RegistrationScreen() {
   const [phone, setPhone] = useState("");
   const [password, setPassword] = useState("");
   const [address, setAddress] = useState("");
-  
+
   // Loading states
   const [submitting, setSubmitting] = useState(false);
   const [verifying, setVerifying] = useState(false);
@@ -122,7 +122,7 @@ export default function RegistrationScreen() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          email: email,
+          email: email.toLowerCase().trim(),
           code: otp,
         }),
       });
@@ -135,7 +135,7 @@ export default function RegistrationScreen() {
 
       Alert.alert("Success", "Account verified successfully!");
       setShowOtp(false);
-      router.push("/home"); 
+      router.push("/login");
     } catch (err: any) {
       Alert.alert("Verification Error", err.message);
     } finally {
@@ -156,7 +156,7 @@ export default function RegistrationScreen() {
       if (!res.ok) throw new Error("Failed to resend OTP");
 
       Alert.alert("OTP Sent", "A new code has been sent to your email.");
-      setOtp(""); 
+      setOtp("");
     } catch (err: any) {
       Alert.alert("Resend Failed", err.message);
     } finally {
@@ -335,7 +335,7 @@ export default function RegistrationScreen() {
                 {resending ? "Sending..." : "Resend OTP"}
               </Text>
             </Pressable>
-            
+
             <Pressable onPress={() => setShowOtp(false)} style={{ marginTop: 15 }}>
               <Text style={{ textAlign: 'center', color: 'gray', fontSize: 13 }}>Cancel</Text>
             </Pressable>
@@ -369,7 +369,7 @@ const styles = StyleSheet.create({
   addressInput: { minHeight: 60, textAlignVertical: "top" },
   registerButton: { marginTop: 12, backgroundColor: PRIMARY_BLUE, paddingVertical: 12, borderRadius: 999, alignItems: "center" },
   registerText: { color: "#FFFFFF", fontSize: 16, fontWeight: "600" },
-  
+
   loginRow: { marginTop: 15, flexDirection: "row", justifyContent: "center", alignItems: "center" },
   loginPrompt: { fontSize: 13, color: "rgba(0,0,0,0.65)" },
   loginLink: { fontSize: 13, color: DEEP_BLUE, fontWeight: "600" },

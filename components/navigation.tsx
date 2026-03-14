@@ -65,7 +65,7 @@ export default function Navigation() {
   const parentNavItems: NavItem[] = [
     { id: "1", label: "Dashboard", icon: "grid", route: "/dashboard" },
     { id: "2", label: "Map", icon: "map", route: "/map" },
-    { id: "3", label: "Bills", icon: "receipt", route: "/billing" },
+    { id: "3", label: "Bills", icon: "receipt", route: "/payment" },
   ];
 
   const getNavItems = () => {

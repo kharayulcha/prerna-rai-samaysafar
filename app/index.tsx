@@ -1,15 +1,15 @@
 import { useRouter } from "expo-router";
 import React, { useEffect, useRef, useState } from "react";
 import {
-  Image,
-  NativeScrollEvent,
-  NativeSyntheticEvent,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  useWindowDimensions,
-  View,
+    Image,
+    NativeScrollEvent,
+    NativeSyntheticEvent,
+    Pressable,
+    ScrollView,
+    StyleSheet,
+    Text,
+    useWindowDimensions,
+    View,
 } from "react-native";
 
 export default function GetStartedScreen() {
@@ -76,7 +76,7 @@ export default function GetStartedScreen() {
       {/* Top Logo */}
       <View style={styles.logoContainer}>
         <Image
-          source={require("../assets/images/logo.png")}
+          source={require("../assets/images/splash-screen.png")}
           style={styles.logo}
           resizeMode="contain"
         />

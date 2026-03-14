@@ -1,24 +1,25 @@
 import { Ionicons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { useLocalSearchParams } from "expo-router";
 import React, { useCallback, useEffect, useState } from "react";
 import {
-  ActivityIndicator,
-  Alert,
-  FlatList,
-  Modal,
-  SafeAreaView,
-  StyleSheet,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  View,
+    ActivityIndicator,
+    Alert,
+    FlatList,
+    Modal,
+    SafeAreaView,
+    StyleSheet,
+    Text,
+    TextInput,
+    TouchableOpacity,
+    View,
 } from "react-native";
 import Navigation from "../components/navigation";
 
 const PRIMARY_BLUE = "#4FA3FF";
 const DEEP_BLUE = "#165C9C";
 const API_BASE_URL =
-  process.env.EXPO_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
+  process.env.EXPO_PUBLIC_API_BASE_URL ?? "http://192.168.1.73:8004";
 
 interface UserItem {
   id: string;
@@ -37,8 +38,16 @@ interface RouteItem {
   Name: string;
 }
 
+const getInitialTab = (tab?: string | string[]) => {
+  const resolvedTab = Array.isArray(tab) ? tab[0] : tab;
+  return resolvedTab === "parents" ? "parents" : "students";
+};
+
 export default function People() {
-  const [activeTab, setActiveTab] = useState<"students" | "parents">("students");
+  const params = useLocalSearchParams<{ tab?: string | string[] }>();
+  const [activeTab, setActiveTab] = useState<"students" | "parents">(
+    () => getInitialTab(params.tab),
+  );
   const [users, setUsers] = useState<UserItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [modalVisible, setModalVisible] = useState(false);
@@ -63,9 +72,13 @@ export default function People() {
     return await AsyncStorage.getItem("authToken");
   }, []);
 
-  const getAuthHeaders = useCallback(async (): Promise<Record<string, string>> => {
+  const getAuthHeaders = useCallback(async (): Promise<
+    Record<string, string>
+  > => {
     const rawToken = await getStoredToken();
-    const token = rawToken?.startsWith("Bearer ") ? rawToken.slice(7) : rawToken;
+    const token = rawToken?.startsWith("Bearer ")
+      ? rawToken.slice(7)
+      : rawToken;
     return token ? { Authorization: `Bearer ${token}` } : {};
   }, [getStoredToken]);
 
@@ -77,7 +90,7 @@ export default function People() {
         atob(base64)
           .split("")
           .map((c) => "%" + ("00" + c.charCodeAt(0).toString(16)).slice(-2))
-          .join("")
+          .join(""),
       );
       return JSON.parse(jsonPayload);
     } catch {
@@ -132,6 +145,10 @@ export default function People() {
   }, [getAuthHeaders]);
 
   useEffect(() => {
+    setActiveTab(getInitialTab(params.tab));
+  }, [params.tab]);
+
+  useEffect(() => {
     fetchUsers();
     if (activeTab === "students") {
       fetchParentsAndRoutes();
@@ -147,7 +164,7 @@ export default function People() {
       phone: "",
       password: "",
       parentId: null,
-      routeId: null
+      routeId: null,
     });
     setModalVisible(true);
   };
@@ -161,7 +178,7 @@ export default function People() {
       phone: user.phone,
       password: "",
       parentId: user.parentId ?? null,
-      routeId: user.routeId ?? null
+      routeId: user.routeId ?? null,
     });
     setModalVisible(true);
   };
@@ -198,7 +215,7 @@ export default function People() {
         role: role,
         orgId: orgId,
         parentId: form.parentId,
-        routeId: form.routeId
+        routeId: form.routeId,
       };
 
       if (isEditMode && selectedUserId) {
@@ -209,7 +226,7 @@ export default function People() {
           email: form.email,
           phone: form.phone,
           parentId: form.parentId,
-          routeId: form.routeId
+          routeId: form.routeId,
         };
       }
 
@@ -225,7 +242,10 @@ export default function People() {
         throw new Error(data.message || "Failed to save user");
       }
 
-      Alert.alert("Success", `User ${isEditMode ? 'updated' : 'added'} successfully`);
+      Alert.alert(
+        "Success",
+        `User ${isEditMode ? "updated" : "added"} successfully`,
+      );
       setModalVisible(false);
       fetchUsers();
     } catch (error: any) {
@@ -260,9 +280,9 @@ export default function People() {
             } catch (error: any) {
               Alert.alert("Error", error.message || "Could not delete user");
             }
-          }
-        }
-      ]
+          },
+        },
+      ],
     );
   };
 
@@ -334,18 +354,26 @@ export default function People() {
                   <Text style={styles.name}>{item.name}</Text>
                   <Text style={styles.details}>{item.email}</Text>
                   <Text style={styles.details}>{item.phone}</Text>
-                  {item.role === 'student' && (
+                  {item.role === "student" && (
                     <View style={styles.assignmentDetails}>
                       {item.parentName && (
                         <View style={styles.tag}>
-                          <Ionicons name="people" size={12} color={PRIMARY_BLUE} />
-                          <Text style={styles.tagText}>P: {item.parentName}</Text>
+                          <Ionicons
+                            name="people"
+                            size={12}
+                            color={PRIMARY_BLUE}
+                          />
+                          <Text style={styles.tagText}>
+                            P: {item.parentName}
+                          </Text>
                         </View>
                       )}
                       {item.routeName && (
                         <View style={styles.tag}>
                           <Ionicons name="map" size={12} color="#4CAF50" />
-                          <Text style={styles.tagText}>R: {item.routeName}</Text>
+                          <Text style={styles.tagText}>
+                            R: {item.routeName}
+                          </Text>
                         </View>
                       )}
                     </View>
@@ -353,10 +381,16 @@ export default function People() {
                 </View>
               </View>
               <View style={styles.actions}>
-                <TouchableOpacity onPress={() => handleOpenEdit(item)} style={styles.actionBtn}>
+                <TouchableOpacity
+                  onPress={() => handleOpenEdit(item)}
+                  style={styles.actionBtn}
+                >
                   <Ionicons name="pencil" size={20} color={PRIMARY_BLUE} />
                 </TouchableOpacity>
-                <TouchableOpacity onPress={() => handleDelete(item.id)} style={styles.actionBtn}>
+                <TouchableOpacity
+                  onPress={() => handleDelete(item.id)}
+                  style={styles.actionBtn}
+                >
                   <Ionicons name="trash-outline" size={20} color="#FF4F4F" />
                 </TouchableOpacity>
               </View>
@@ -375,7 +409,8 @@ export default function People() {
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
             <Text style={styles.modalTitle}>
-              {isEditMode ? "Edit" : "Add New"} {activeTab === "students" ? "Student" : "Parent"}
+              {isEditMode ? "Edit" : "Add New"}{" "}
+              {activeTab === "students" ? "Student" : "Parent"}
             </Text>
 
             <Text style={styles.label}>Full Name</Text>
@@ -428,18 +463,32 @@ export default function People() {
                         "Select Parent",
                         "Choose a parent for this student",
                         [
-                          { text: "None", onPress: () => setForm({ ...form, parentId: null }) },
-                          ...availableParents.map(p => ({
+                          {
+                            text: "None",
+                            onPress: () => setForm({ ...form, parentId: null }),
+                          },
+                          ...availableParents.map((p) => ({
                             text: p.name,
-                            onPress: () => setForm({ ...form, parentId: Number(p.id) })
+                            onPress: () =>
+                              setForm({ ...form, parentId: Number(p.id) }),
                           })),
-                          { text: "Cancel", style: "cancel" }
-                        ]
+                          { text: "Cancel", style: "cancel" },
+                        ],
                       );
                     }}
                   >
-                    <Text style={form.parentId ? styles.pickerText : styles.pickerPlaceholder}>
-                      {form.parentId ? availableParents.find(p => Number(p.id) === form.parentId)?.name : "Select Parent"}
+                    <Text
+                      style={
+                        form.parentId
+                          ? styles.pickerText
+                          : styles.pickerPlaceholder
+                      }
+                    >
+                      {form.parentId
+                        ? availableParents.find(
+                            (p) => Number(p.id) === form.parentId,
+                          )?.name
+                        : "Select Parent"}
                     </Text>
                     <Ionicons name="chevron-down" size={20} color="#999" />
                   </TouchableOpacity>
@@ -454,18 +503,32 @@ export default function People() {
                         "Select Route",
                         "Choose a route for this student",
                         [
-                          { text: "None", onPress: () => setForm({ ...form, routeId: null }) },
-                          ...availableRoutes.map(r => ({
+                          {
+                            text: "None",
+                            onPress: () => setForm({ ...form, routeId: null }),
+                          },
+                          ...availableRoutes.map((r) => ({
                             text: r.Name,
-                            onPress: () => setForm({ ...form, routeId: r.RouteId })
+                            onPress: () =>
+                              setForm({ ...form, routeId: r.RouteId }),
                           })),
-                          { text: "Cancel", style: "cancel" }
-                        ]
+                          { text: "Cancel", style: "cancel" },
+                        ],
                       );
                     }}
                   >
-                    <Text style={form.routeId ? styles.pickerText : styles.pickerPlaceholder}>
-                      {form.routeId ? availableRoutes.find(r => r.RouteId === form.routeId)?.Name : "Select Route"}
+                    <Text
+                      style={
+                        form.routeId
+                          ? styles.pickerText
+                          : styles.pickerPlaceholder
+                      }
+                    >
+                      {form.routeId
+                        ? availableRoutes.find(
+                            (r) => r.RouteId === form.routeId,
+                          )?.Name
+                        : "Select Route"}
                     </Text>
                     <Ionicons name="chevron-down" size={20} color="#999" />
                   </TouchableOpacity>
@@ -480,11 +543,10 @@ export default function People() {
               >
                 <Text style={styles.cancelText}>Cancel</Text>
               </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.saveBtn}
-                onPress={handleSaveUser}
-              >
-                <Text style={styles.saveText}>{isEditMode ? "Update" : "Add User"}</Text>
+              <TouchableOpacity style={styles.saveBtn} onPress={handleSaveUser}>
+                <Text style={styles.saveText}>
+                  {isEditMode ? "Update" : "Add User"}
+                </Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -575,7 +637,7 @@ const styles = StyleSheet.create({
     marginBottom: 10,
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: 'space-between',
+    justifyContent: "space-between",
     shadowColor: "#000",
     shadowOffset: { width: 0, height: 1 },
     shadowOpacity: 0.05,
@@ -583,9 +645,9 @@ const styles = StyleSheet.create({
     elevation: 2,
   },
   cardContent: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    flex: 1
+    flexDirection: "row",
+    alignItems: "center",
+    flex: 1,
   },
   avatar: {
     width: 44,
@@ -614,11 +676,11 @@ const styles = StyleSheet.create({
     color: "#666",
   },
   actions: {
-    flexDirection: 'row',
-    gap: 12
+    flexDirection: "row",
+    gap: 12,
   },
   actionBtn: {
-    padding: 8
+    padding: 8,
   },
   modalOverlay: {
     flex: 1,
@@ -673,7 +735,7 @@ const styles = StyleSheet.create({
     padding: 12,
     borderRadius: 10,
     backgroundColor: PRIMARY_BLUE,
-    alignItems: 'center',
+    alignItems: "center",
   },
   cancelText: {
     color: "#666",
@@ -684,15 +746,15 @@ const styles = StyleSheet.create({
     fontWeight: "bold",
   },
   assignmentDetails: {
-    flexDirection: 'row',
+    flexDirection: "row",
     gap: 8,
     marginTop: 4,
-    flexWrap: 'wrap'
+    flexWrap: "wrap",
   },
   tag: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#f0f7ff',
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#f0f7ff",
     paddingHorizontal: 8,
     paddingVertical: 2,
     borderRadius: 99,
@@ -700,31 +762,31 @@ const styles = StyleSheet.create({
   },
   tagText: {
     fontSize: 11,
-    color: '#333',
-    fontWeight: '500'
+    color: "#333",
+    fontWeight: "500",
   },
   assignmentSelectors: {
-    marginTop: 4
+    marginTop: 4,
   },
   pickerWrapper: {
     borderWidth: 1,
     borderColor: "#ddd",
     borderRadius: 10,
     backgroundColor: "#f9f9f9",
-    overflow: 'hidden'
+    overflow: "hidden",
   },
   pickerTrigger: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
     padding: 12,
   },
   pickerText: {
     fontSize: 16,
-    color: '#333'
+    color: "#333",
   },
   pickerPlaceholder: {
     fontSize: 16,
-    color: '#999'
-  }
+    color: "#999",
+  },
 });

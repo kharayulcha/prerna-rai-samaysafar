@@ -5,6 +5,7 @@ import React, { useEffect, useState } from "react";
 import {
     ActivityIndicator,
     Alert,
+    Image,
     SafeAreaView,
     ScrollView,
     StyleSheet,
@@ -24,10 +25,12 @@ interface ProfileData {
     phone: string;
     address: string;
     orgId: string;
+    children?: { name: string }[];
     driverName?: string;
     driverPhone?: string;
     busNumber?: string;
     routeName?: string;
+    organizationLogo?: string;
 }
 
 export default function MyProfile() {
@@ -59,6 +62,7 @@ export default function MyProfile() {
     const loadProfile = async () => {
         try {
             const token = await AsyncStorage.getItem("authToken");
+            const storedLogo = await AsyncStorage.getItem("organizationLogo");
             if (token) {
                 const decoded = decodeJWT(token);
                 if (decoded) {
@@ -69,10 +73,12 @@ export default function MyProfile() {
                         phone: decoded.phone || decoded.Phone || "N/A",
                         address: decoded.address || decoded.Address || "N/A",
                         orgId: decoded.orgId || decoded.OrgId || "N/A",
+                        children: decoded.children || [],
                         driverName: decoded.driverName || null,
                         driverPhone: decoded.driverPhone || null,
                         busNumber: decoded.busNumber || null,
                         routeName: decoded.routeName || null,
+                        organizationLogo: storedLogo || undefined,
                     });
                 }
             }
@@ -121,9 +127,17 @@ export default function MyProfile() {
                 {/* Profile Avatar Section */}
                 <View style={styles.avatarSection}>
                     <View style={styles.avatarCircle}>
-                        <Text style={styles.avatarInitial}>
-                            {profile?.name?.charAt(0).toUpperCase() || "U"}
-                        </Text>
+                        {profile?.organizationLogo ? (
+                            <Image
+                                source={{ uri: profile.organizationLogo }}
+                                style={styles.avatarImage}
+                                resizeMode="contain"
+                            />
+                        ) : (
+                            <Text style={styles.avatarInitial}>
+                                {profile?.name?.charAt(0).toUpperCase() || "U"}
+                            </Text>
+                        )}
                     </View>
                     <Text style={styles.userName}>{profile?.name}</Text>
                     <View style={styles.roleTag}>
@@ -143,11 +157,19 @@ export default function MyProfile() {
                         label="Phone Number"
                         value={profile?.phone || "N/A"}
                     />
-                    <InfoCard
-                        icon="location-outline"
-                        label="Address"
-                        value={profile?.address || "N/A"}
-                    />
+                    {profile?.role?.toLowerCase() === "parent" && profile?.children && profile.children.length > 0 ? (
+                        <InfoCard
+                            icon="people-outline"
+                            label="Children"
+                            value={profile.children.map(c => c.name).join(", ")}
+                        />
+                    ) : (
+                        <InfoCard
+                            icon="location-outline"
+                            label="Address"
+                            value={profile?.address || "N/A"}
+                        />
+                    )}
                     {profile?.routeName && (
                         <InfoCard
                             icon="map-outline"
@@ -259,6 +281,11 @@ const styles = StyleSheet.create({
         fontSize: 40,
         color: "#FFF",
         fontWeight: "bold",
+    },
+    avatarImage: {
+        width: 100,
+        height: 100,
+        borderRadius: 50,
     },
     userName: {
         fontSize: 24,
