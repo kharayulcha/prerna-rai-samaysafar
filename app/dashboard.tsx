@@ -1,34 +1,24 @@
 import { Ionicons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { useFocusEffect } from "@react-navigation/native";
 import { LinearGradient } from "expo-linear-gradient";
-import * as Location from "expo-location";
 import { useRouter } from "expo-router";
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
   Image,
-  Modal,
   SafeAreaView,
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   TouchableOpacity,
   useWindowDimensions,
   View
 } from "react-native";
 import Navigation from "../components/navigation";
-import socket, {
-  connectSocket,
-  disconnectSocket,
-  emitLocationUpdate,
-} from "../utils/socket";
-import StudentProfileModal from "./StudentProfile";
+import socket, { connectSocket, disconnectSocket } from "../utils/socket";
 
-const API_BASE_URL =
-  process.env.EXPO_PUBLIC_API_BASE_URL ?? "http://192.168.1.73:8004";
+const API_BASE_URL = process.env.EXPO_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
 
 interface OrganizationData {
   name: string;
@@ -41,27 +31,25 @@ interface OrganizationData {
 export default function Dashboard() {
   const router = useRouter();
   const { width } = useWindowDimensions();
-  const [organizationData, setOrganizationData] = useState<
-    OrganizationData & {
-      role?: string;
-      parentName?: string;
-      routeName?: string;
-      driverName?: string;
-      driverPhone?: string | null;
-      busNumber?: string;
-      children?: {
-        name: string;
-        routeName: string | null;
-        driverName: string | null;
-        driverPhone: string | null;
-        busNumber: string | null;
-      }[];
-      scheduleDays?: string;
-      startTime?: string;
-      assignedRouteId?: number | null;
-      assignedBusId?: number | null;
-    }
-  >({
+  const [organizationData, setOrganizationData] = useState<OrganizationData & {
+    role?: string;
+    parentName?: string;
+    routeName?: string;
+    driverName?: string;
+    driverPhone?: string;
+    busNumber?: string;
+    children?: Array<{
+      name: string;
+      routeName: string | null;
+      driverName: string | null;
+      driverPhone: string | null;
+      busNumber: string | null;
+    }>;
+    scheduleDays?: string;
+    startTime?: string;
+    assignedRouteId?: number | null;
+    assignedBusId?: number | null;
+  }>({
     name: "Loading...",
     logo: require("../assets/images/logo.png"),
     email: "Loading...",
@@ -71,29 +59,17 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [isTripStarted, setIsTripStarted] = useState(false);
   const [activeTripId, setActiveTripId] = useState<number | null>(null);
-  const [, setAllRoutes] = useState<any[]>([]);
-  const [isGpsActive, setIsGpsActive] = useState(false);
-  const locationWatchRef = useRef<Location.LocationSubscription | null>(null);
+  const [allRoutes, setAllRoutes] = useState<any[]>([]);
 
-  // --- BILLING STATE ---
-  const [balanceDue, setBalanceDue] = useState<number>(0);
-  const [nextDueDate, setNextDueDate] = useState<string>("--");
-  const [showProfileModal, setShowProfileModal] = useState(false);
-
-  // --- NOTICE MODAL STATE ---
-  const [showNoticeModal, setShowNoticeModal] = useState(false);
-  const [noticeHeader, setNoticeHeader] = useState("");
-  const [noticeMessage, setNoticeMessage] = useState("");
-  const [isSendingNotice, setIsSendingNotice] = useState(false);
-
-  // --- TRIP SCHEDULE STATE ---
-  const [tripSchedule, setTripSchedule] = useState<
-    { route: string; time: string }[]
-  >([]);
-
+  // Responsive sizing
+  const isSmallScreen = width < 375;
   const numColumns = width < 350 ? 2 : 3;
 
-  const decodeJWT = useCallback((token: string) => {
+  useEffect(() => {
+    loadOrganizationData();
+  }, []);
+
+  const decodeJWT = (token: string) => {
     try {
       const base64Url = token.split(".")[1];
       const base64 = base64Url.replace(/-/g, "+").replace(/_/g, "/");
@@ -108,43 +84,28 @@ export default function Dashboard() {
       console.error("Error decoding JWT:", error);
       return null;
     }
-  }, []);
+  };
 
-  const loadOrganizationData = useCallback(async () => {
+  const loadOrganizationData = async () => {
     try {
       const token = await AsyncStorage.getItem("authToken");
-      const storedLogo = await AsyncStorage.getItem("organizationLogo");
-      
-      console.log("[Dashboard] Stored logo:", storedLogo ? `${storedLogo.substring(0, 50)}...` : "None");
-      
       if (token) {
         const decoded = decodeJWT(token);
         if (decoded) {
           console.log("Decoded Token:", decoded);
           // Prioritize user details from token
-          const userName =
-            decoded.name ||
-            decoded.Name ||
-            decoded.organizationName ||
-            "Welcome User";
+          const userName = decoded.name || decoded.Name || decoded.organizationName || "Welcome User";
           const userEmail = decoded.email || decoded.Email || "";
-          const userPhone =
-            decoded.phone || decoded.Phone || decoded.contact || "";
+          const userPhone = decoded.phone || decoded.Phone || decoded.contact || "";
           const userAddress = decoded.address || decoded.Address || "";
           const userRole = decoded.role || decoded.Role || "user";
           const parentName = decoded.parentName || null;
           const routeName = decoded.routeName || null;
           const children = decoded.children || [];
 
-          // Determine logo source - prefer stored base64, fallback to default
-          let logoSource: any = require("../assets/images/logo.png");
-          if (storedLogo && storedLogo.startsWith("data:")) {
-            logoSource = { uri: storedLogo };
-          }
-
           setOrganizationData({
             name: userName,
-            logo: logoSource,
+            logo: require("../assets/images/logo.png"),
             email: userEmail,
             contact: userPhone,
             address: userAddress,
@@ -157,42 +118,26 @@ export default function Dashboard() {
             children: children,
             scheduleDays: decoded.scheduleDays || null,
             startTime: decoded.startTime || null,
-            assignedRouteId:
-              decoded.routeId ||
-              decoded.RouteId ||
-              ((await AsyncStorage.getItem("assignedRouteId"))
-                ? Number(await AsyncStorage.getItem("assignedRouteId"))
-                : null),
-            assignedBusId:
-              decoded.busId ||
-              decoded.BusId ||
-              ((await AsyncStorage.getItem("assignedBusId"))
-                ? Number(await AsyncStorage.getItem("assignedBusId"))
-                : null),
+            assignedRouteId: decoded.routeId || decoded.RouteId || (await AsyncStorage.getItem("assignedRouteId") ? Number(await AsyncStorage.getItem("assignedRouteId")) : null),
+            assignedBusId: decoded.busId || decoded.BusId || (await AsyncStorage.getItem("assignedBusId") ? Number(await AsyncStorage.getItem("assignedBusId")) : null),
           });
           console.log("Assigned IDs loaded:", {
-            routeId: decoded.routeId ?? decoded.RouteId ?? "Not assigned (checked AsyncStorage as fallback)",
-            busId: decoded.busId ?? decoded.BusId ?? "Not assigned (checked AsyncStorage as fallback)",
-            role: userRole,
+            routeId: decoded.routeId || decoded.RouteId,
+            busId: decoded.busId || decoded.BusId
           });
 
           // If student, fetch their full schedule explicitly to be sure
           if (userRole.toLowerCase() === "student") {
             try {
-              const res = await fetch(
-                `${process.env.EXPO_PUBLIC_API_BASE_URL}/api/routes/student-schedule/view`,
-                {
-                  headers: {
-                    Authorization: `Bearer ${token.startsWith("Bearer ") ? token.slice(7) : token}`,
-                  },
-                },
-              );
+              const res = await fetch(`${process.env.EXPO_PUBLIC_API_BASE_URL}/api/routes/student-schedule/view`, {
+                headers: { Authorization: `Bearer ${token.startsWith("Bearer ") ? token.slice(7) : token}` }
+              });
               const data = await res.json();
               if (data.scheduleDays) {
-                setOrganizationData((prev) => ({
+                setOrganizationData(prev => ({
                   ...prev,
                   scheduleDays: data.scheduleDays,
-                  startTime: data.startTime,
+                  startTime: data.startTime
                 }));
               }
             } catch (error) {
@@ -200,57 +145,11 @@ export default function Dashboard() {
             }
           }
 
-          // --- FETCH BILLING INFO FOR PARENT ---
-          if (userRole.toLowerCase() === "parent") {
-            try {
-              const res = await fetch(`${API_BASE_URL}/api/payments/bills`, {
-                headers: {
-                  Authorization: `Bearer ${token.startsWith("Bearer ") ? token.slice(7) : token}`,
-                  "Content-Type": "application/json",
-                },
-              });
-              const data = await res.json();
-              if (res.ok && data.bills) {
-                let totalPending = 0;
-                let soonestDue: Date | null = null;
-                
-                (data.bills || []).forEach((bill: any) => {
-                  const paidSoFar = (bill.payments ?? [])
-                    .filter((p: any) => p.Status === "completed")
-                    .reduce((sum: number, p: any) => sum + p.Amount, 0);
-                    
-                  const remaining = bill.Amount - paidSoFar;
-                  if (remaining > 0) {
-                    totalPending += remaining;
-                    const dDate = new Date(bill.DueDate);
-                    if (!soonestDue || dDate < soonestDue) {
-                      soonestDue = dDate;
-                    }
-                  }
-                });
-                
-                setBalanceDue(totalPending);
-                if (soonestDue) {
-                  const d = soonestDue as Date;
-                  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-                  setNextDueDate(`${months[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()}`);
-                }
-              }
-            } catch (err) {
-              console.warn("Failed to fetch dashboard billing stats:", err);
-            }
-          }
-
           // If Admin, fetch all routes for organization-wide view
-          if (
-            userRole.toLowerCase() === "admin" ||
-            userRole.toLowerCase() === "orgadmin"
-          ) {
+          if (userRole.toLowerCase() === "admin" || userRole.toLowerCase() === "orgadmin") {
             try {
               const res = await fetch(`${API_BASE_URL}/api/routes/get-routes`, {
-                headers: {
-                  Authorization: `Bearer ${token.startsWith("Bearer ") ? token.slice(7) : token}`,
-                },
+                headers: { Authorization: `Bearer ${token.startsWith("Bearer ") ? token.slice(7) : token}` }
               });
               const data = await res.json();
               if (data.routes) {
@@ -267,11 +166,7 @@ export default function Dashboard() {
     } finally {
       setLoading(false);
     }
-  }, [decodeJWT]);
-
-  useEffect(() => {
-    loadOrganizationData();
-  }, [loadOrganizationData]);
+  };
 
   useEffect(() => {
     if (organizationData.role) {
@@ -287,139 +182,19 @@ export default function Dashboard() {
         disconnectSocket();
       };
     }
-  }, [organizationData.assignedRouteId, organizationData.role]);
-
-  // Fetch active trip for driver when dashboard comes into focus
-  useFocusEffect(
-    useCallback(() => {
-      const checkActiveTrip = async () => {
-        try {
-          if (organizationData.role?.toLowerCase() !== "driver") {
-            return;
-          }
-
-          const token = await AsyncStorage.getItem("authToken");
-          if (!token) {
-            return;
-          }
-
-          const res = await fetch(
-          `${API_BASE_URL}/api/trips/my-active`,
-          {
-            headers: {
-              Authorization: `Bearer ${token}`,
-            },
-          }
-        );
-
-          const data = await res.json();
-          
-          // Check both success (200) and error (404) responses
-          if (res.ok && data.trip && data.trip.TripId) {
-            // Active trip found - restore the trip state
-            setIsTripStarted(true);
-            setActiveTripId(data.trip.TripId);
-          } else {
-            // No active trip (404 or any other error) - reset state
-            setIsTripStarted(false);
-            setActiveTripId(null);
-            setIsGpsActive(false);
-            // Stop GPS tracking if it's running
-            if (locationWatchRef.current) {
-              locationWatchRef.current.remove();
-              locationWatchRef.current = null;
-            }
-          }
-        } catch (error) {
-          console.error("Error checking active trip:", error);
-          // On error, reset state
-          setIsTripStarted(false);
-          setActiveTripId(null);
-          setIsGpsActive(false);
-        }
-      };
-
-      if (organizationData.role) {
-        checkActiveTrip();
-      }
-    }, [organizationData.role])
-  );
-
-  // Fetch today's trip schedule from API
-  useEffect(() => {
-    const fetchTodaySchedule = async () => {
-      try {
-        const token = await AsyncStorage.getItem("authToken");
-        if (!token) {
-          setTripSchedule([]);
-          return;
-        }
-
-        // Fetch all routes from API
-        const res = await fetch(
-          `${API_BASE_URL}/api/routes/get-routes`,
-          {
-            headers: {
-              Authorization: `Bearer ${token.startsWith("Bearer ") ? token.slice(7) : token}`,
-              "Content-Type": "application/json",
-            },
-          }
-        );
-
-        if (res.ok) {
-          const data = await res.json();
-          console.log("DEBUG: All routes fetched:", data.routes);
-          
-          // Get today's day name
-          const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-          const todayIndex = new Date().getDay();
-          const todayName = days[todayIndex];
-          console.log("DEBUG: Today is:", todayName, "Index:", todayIndex);
-
-          // Filter routes that are scheduled for today
-          const todaySchedules = (data.routes || [])
-            .filter((route: any) => {
-              const scheduleDays = route.ScheduleDays || "";
-              console.log("DEBUG: Route:", route.Name, "ScheduleDays:", scheduleDays, "Includes today:", scheduleDays.includes(todayName));
-              // Check if today's day is included in the schedule
-              return scheduleDays.includes(todayName);
-            })
-            .map((route: any) => ({
-              route: route.Name || "Unknown Route",
-              time: route.StartTime || "--",
-            }));
-
-          console.log("DEBUG: Filtered today schedules:", todaySchedules);
-          setTripSchedule(todaySchedules);
-        } else {
-          console.warn("Failed to fetch routes:", res.status);
-          setTripSchedule([]);
-        }
-      } catch (error) {
-        console.error("Error fetching today's trip schedule:", error);
-        setTripSchedule([]);
-      }
-    };
-
-    fetchTodaySchedule();
-  }, []);
+  }, [organizationData.role, organizationData.routeName]);
 
   const handleStartTrip = async () => {
     try {
       const token = await AsyncStorage.getItem("authToken");
+      // For demo, we assume the first route/bus is used if none assigned
       console.log("Starting trip with payload:", {
         routeId: organizationData.assignedRouteId,
-        busId: organizationData.assignedBusId,
+        busId: organizationData.assignedBusId
       });
 
-      if (
-        !organizationData.assignedRouteId ||
-        !organizationData.assignedBusId
-      ) {
-        Alert.alert(
-          "Missing Data",
-          "Your driver profile is missing an assigned route or bus. Please contact your admin.",
-        );
+      if (!organizationData.assignedRouteId || !organizationData.assignedBusId) {
+        Alert.alert("Missing Data", "Your driver profile is missing an assigned route or bus. Please contact your admin.");
         return;
       }
 
@@ -427,213 +202,85 @@ export default function Dashboard() {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
+          Authorization: `Bearer ${token}`
         },
         body: JSON.stringify({
           routeId: organizationData.assignedRouteId,
-          busId: organizationData.assignedBusId,
-        }),
+          busId: organizationData.assignedBusId
+        })
       });
       const data = await res.json();
       if (res.ok) {
-        const tripId: number = data.trip.TripId;
-        const routeId: number = organizationData.assignedRouteId!;
         setIsTripStarted(true);
-        setActiveTripId(tripId);
-
-        // ── GPS TRACKING ──────────────────────────────────────────────
-        const { status } = await Location.requestForegroundPermissionsAsync();
-        if (status !== "granted") {
-          Alert.alert(
-            "Permission Denied",
-            "Location permission is required for live tracking. Students won't see your position.",
-          );
-        } else {
-          // Start watching GPS position every 5 seconds
-          const subscription = await Location.watchPositionAsync(
-            {
-              accuracy: Location.Accuracy.High,
-              timeInterval: 5000, // ms between updates
-              distanceInterval: 5, // meters minimum movement
-            },
-            async (locationResult) => {
-              const { latitude, longitude } = locationResult.coords;
-              const currentToken = await AsyncStorage.getItem("authToken");
-
-              // 1️⃣ Emit via Socket.IO for instant broadcast + DB persistence (handled in app.ts)
-              try {
-                const base64Url = (currentToken || "").split(".")[1] || "";
-                const base64 = base64Url.replace(/-/g, "+").replace(/_/g, "/");
-                const jwtPayload = JSON.parse(atob(base64));
-                const driverId: number = jwtPayload?.userId ?? 0;
-                emitLocationUpdate({
-                  tripId,
-                  routeId,
-                  latitude,
-                  longitude,
-                  driverId,
-                });
-              } catch {
-                emitLocationUpdate({
-                  tripId,
-                  routeId,
-                  latitude,
-                  longitude,
-                  driverId: 0,
-                });
-              }
-
-              // 2️⃣ Also POST to backend so location is persisted in DB
-              try {
-                await fetch(`${API_BASE_URL}/api/trips/location`, {
-                  method: "POST",
-                  headers: {
-                    "Content-Type": "application/json",
-                    Authorization: `Bearer ${currentToken}`,
-                  },
-                  body: JSON.stringify({ tripId, latitude, longitude }),
-                });
-              } catch (err) {
-                console.warn("[GPS] Failed to POST location:", err);
-              }
-            },
-          );
-          locationWatchRef.current = subscription;
-          setIsGpsActive(true);
-        }
-        // ──────────────────────────────────────────────────────────────
-
+        setActiveTripId(data.trip.TripId);
         Alert.alert("Success", "Trip started! Students are being notified.");
       } else {
         Alert.alert("Error", data.message);
       }
-    } catch {
+    } catch (error) {
       Alert.alert("Error", "Failed to start trip");
     }
   };
 
   const handleEndTrip = async () => {
     try {
-      // ── STOP GPS TRACKING ─────────────────────────────────────────
-      if (locationWatchRef.current) {
-        locationWatchRef.current.remove();
-        locationWatchRef.current = null;
-      }
-      setIsGpsActive(false);
-      // ──────────────────────────────────────────────────────────────
-
       const token = await AsyncStorage.getItem("authToken");
       const res = await fetch(`${API_BASE_URL}/api/trips/end`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
+          Authorization: `Bearer ${token}`
         },
-        body: JSON.stringify({ tripId: activeTripId }),
+        body: JSON.stringify({ tripId: activeTripId })
       });
       if (res.ok) {
         setIsTripStarted(false);
         setActiveTripId(null);
         Alert.alert("Success", "Trip ended successfully.");
       }
-    } catch {
+    } catch (error) {
       Alert.alert("Error", "Failed to end trip");
     }
   };
 
-  // Cleanup GPS watch if component unmounts while trip is active
-  useEffect(() => {
-    return () => {
-      if (locationWatchRef.current) {
-        locationWatchRef.current.remove();
-        locationWatchRef.current = null;
-      }
-    };
-  }, []);
+  const getFilteredTodaysTrips = () => {
+    const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    const todayName = dayNames[new Date().getDay()];
+
+    return allRoutes
+      .filter(r => {
+        if (r.ScheduleDays === "Daily") return true;
+        const days = r.ScheduleDays.split(',').map((d: string) => d.trim());
+        return days.includes(todayName);
+      })
+      .map(r => ({
+        id: r.RouteId,
+        route: r.Name,
+        time: r.StartTime
+      }));
+  };
+
+  const todaysTrips = allRoutes.length > 0 ? getFilteredTodaysTrips() : [
+    { id: 1, route: "Route A - Baneshwor to School", time: "07:00 AM" },
+    { id: 2, route: "Route B - Koteshwor to School", time: "07:30 AM" },
+    { id: 3, route: "Route C - Thamel to School", time: "08:00 AM" },
+    { id: 4, route: "Route A - School to Baneshwor", time: "03:00 PM" },
+    { id: 5, route: "Route B - School to Koteshwor", time: "03:30 PM" },
+    { id: 6, route: "Route C - School to Thamel", time: "04:00 PM" },
+  ];
 
   const quickActions = [
-    { id: 1, name: "Driver", icon: "car" as const, color: "#5FA3E3" },
-    { id: 2, name: "Student", icon: "school" as const, color: "#5FA3E3" },
-    { id: 3, name: "Parent", icon: "people" as const, color: "#5FA3E3" },
-    { id: 4, name: "Schedule", icon: "calendar" as const, color: "#5FA3E3" },
-    { id: 5, name: "Fleet", icon: "bus" as const, color: "#5FA3E3" },
-    { id: 6, name: "Payment", icon: "card" as const, color: "#5FA3E3" },
-    { id: 7, name: "Send new notice", icon: "megaphone" as const, color: "#5FA3E3" },
+    { id: 1, name: "Driver", icon: "car" as const, color: "#3B82F6" },
+    { id: 2, name: "Student", icon: "school" as const, color: "#2563EB" },
+    { id: 3, name: "Parent", icon: "people" as const, color: "#1D4ED8" },
+    { id: 4, name: "Schedule", icon: "calendar" as const, color: "#2563EB" },
+    { id: 5, name: "Payment", icon: "card" as const, color: "#1E40AF" },
+    { id: 6, name: "Notice", icon: "notifications" as const, color: "#0891B2" },
   ];
 
   const handleQuickAction = (actionName: string) => {
     console.log(`${actionName} action pressed`);
-    switch (actionName) {
-      case "Driver":
-        router.push("/driver");
-        break;
-      case "Student":
-        router.push({ pathname: "/people", params: { tab: "students" } });
-        break;
-      case "Parent":
-        router.push({ pathname: "/people", params: { tab: "parents" } });
-        break;
-      case "Schedule":
-        router.push("/schedule");
-        break;
-      case "Fleet":
-        router.push("/fleetdashboard");
-        break;
-      case "Payment":
-        router.push("/payment");
-        break;
-      case "Send new notice":
-        setShowNoticeModal(true);
-        break;
-      default:
-        console.warn(`No route defined for action: ${actionName}`);
-    }
-  };
-
-  const handleSendNotice = async () => {
-    if (!noticeHeader.trim() || !noticeMessage.trim()) {
-      Alert.alert("Error", "Please fill in both the header and the message");
-      return;
-    }
-
-    try {
-      setIsSendingNotice(true);
-      const token = await AsyncStorage.getItem("authToken");
-      const apiBaseUrl = process.env.EXPO_PUBLIC_API_BASE_URL;
-
-      const res = await fetch(`${apiBaseUrl}/api/users/send-notice`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({
-          header: noticeHeader,
-          message: noticeMessage
-        })
-      });
-
-      const data = await res.json();
-      if (res.ok) {
-        // Close modal first before showing alert
-        setShowNoticeModal(false);
-        setNoticeHeader("");
-        setNoticeMessage("");
-        setIsSendingNotice(false);
-        
-        // Show success alert after modal is closed
-        setTimeout(() => {
-          Alert.alert("Success", "Notice sent to everyone!");
-        }, 300);
-      } else {
-        setIsSendingNotice(false);
-        Alert.alert("Error", data.message || "Failed to send notice");
-      }
-    } catch (error) {
-      setIsSendingNotice(false);
-      console.error("Error sending notice:", error);
-      Alert.alert("Error", "Connection error");
-    }
+    // Add navigation or action logic here
   };
 
   if (loading) {
@@ -650,92 +297,54 @@ export default function Dashboard() {
   if (organizationData.role?.toLowerCase() === "driver") {
     return (
       <SafeAreaView style={styles.container}>
-        <ScrollView
-          style={styles.scrollView}
-          showsVerticalScrollIndicator={false}
-        >
+        <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false}>
           {/* Premium Driver Pass Header */}
-          <TouchableOpacity
-            activeOpacity={0.92}
-            onPress={() => router.push("/DriverProfile")}
+          <LinearGradient
+            colors={["#0F172A", "#1E293B"]}
+            style={styles.idCardContainer}
           >
-            <LinearGradient
-              colors={["#0F172A", "#1E293B"]}
-              style={styles.idCardContainer}
-            >
-              <View style={styles.idCardDecor} />
+            <View style={styles.idCardDecor} />
 
-              <View style={styles.idCardHeader}>
-                <View
-                  style={[styles.logoContainer, { backgroundColor: "#FFF" }]}
-                >
-                  <Image
-                    source={organizationData.logo}
-                    style={styles.idLogo}
-                    resizeMode="contain"
-                    onError={(e) => {
-                      console.log("[Dashboard] Driver logo load error:", e.nativeEvent.error);
-                      setOrganizationData(prev => ({ ...prev, logo: require("../assets/images/logo.png") }));
-                    }}
-                  />
+            <View style={styles.idCardHeader}>
+              <View style={[styles.logoContainer, { backgroundColor: "#FFF" }]}>
+                <Image
+                  source={require("../assets/images/logo.png")}
+                  style={styles.idLogo}
+                  resizeMode="contain"
+                />
+              </View>
+              <TouchableOpacity
+                style={styles.notificationBell}
+                onPress={() => router.push("/notifications")}
+              >
+                <Ionicons name="notifications-outline" size={22} color="#64748B" />
+                <View style={styles.bellBadge} />
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.idCardBody}>
+              <View style={styles.nameSection}>
+                <Text style={[styles.idRoleLabel, { color: "#3B82F6" }]}>PROFESSIONAL DRIVER PASS</Text>
+                <Text style={styles.idNameValue}>{organizationData.name}</Text>
+                <View style={styles.emailContainer}>
+                  <Ionicons name="mail-outline" size={12} color="#3B82F6" style={{ marginRight: 4 }} />
+                  <Text style={[styles.idEmailValue, { color: "#64748B" }]}>{organizationData.email}</Text>
                 </View>
-                <TouchableOpacity
-                  style={styles.notificationBell}
-                  onPress={() => router.push("/notifications")}
-                >
-                  <Ionicons
-                    name="notifications-outline"
-                    size={22}
-                    color="#64748B"
-                  />
-                  <View style={styles.bellBadge} />
-                </TouchableOpacity>
               </View>
 
-              <View style={styles.idCardBody}>
-                <View style={styles.nameSection}>
-                  <Text style={[styles.idRoleLabel, { color: "#3B82F6" }]}>
-                    PROFESSIONAL DRIVER PASS
-                  </Text>
-                  <Text style={styles.idNameValue}>
-                    {organizationData.name}
-                  </Text>
-                  <View style={styles.emailContainer}>
-                    <Ionicons
-                      name="mail-outline"
-                      size={12}
-                      color="#3B82F6"
-                      style={{ marginRight: 4 }}
-                    />
-                    <Text style={[styles.idEmailValue, { color: "#64748B" }]}>
-                      {organizationData.email}
-                    </Text>
-                  </View>
+              <View style={styles.statsRow}>
+                <View style={styles.statBox}>
+                  <Text style={styles.statLabel}>ASSIGNED ROUTE</Text>
+                  <Text style={styles.statValue}>{organizationData.routeName || "N/A"}</Text>
                 </View>
-
-                <View style={styles.statsRow}>
-                  <View style={styles.statBox}>
-                    <Text style={styles.statLabel}>ASSIGNED ROUTE</Text>
-                    <Text style={styles.statValue}>
-                      {organizationData.routeName || "N/A"}
-                    </Text>
-                  </View>
-                  <View
-                    style={[
-                      styles.statDivider,
-                      { backgroundColor: "rgba(255, 255, 255, 0.1)" },
-                    ]}
-                  />
-                  <View style={styles.statBox}>
-                    <Text style={styles.statLabel}>VEHICLE</Text>
-                    <Text style={styles.statValue}>
-                      {organizationData.busNumber || "N/A"}
-                    </Text>
-                  </View>
+                <View style={[styles.statDivider, { backgroundColor: "rgba(255, 255, 255, 0.1)" }]} />
+                <View style={styles.statBox}>
+                  <Text style={styles.statLabel}>VEHICLE</Text>
+                  <Text style={styles.statValue}>BA 2 KA 4567</Text>
                 </View>
               </View>
-            </LinearGradient>
-          </TouchableOpacity>
+            </View>
+          </LinearGradient>
 
           {/* Trip Control Section */}
           <View style={styles.tripControlSection}>
@@ -743,7 +352,7 @@ export default function Dashboard() {
             <TouchableOpacity
               style={[
                 styles.tripBtn,
-                isTripStarted ? styles.endTripBtn : styles.startTripBtn,
+                isTripStarted ? styles.endTripBtn : styles.startTripBtn
               ]}
               onPress={isTripStarted ? handleEndTrip : handleStartTrip}
               activeOpacity={0.8}
@@ -757,34 +366,28 @@ export default function Dashboard() {
                 {isTripStarted ? "End Trip Now" : "Start Today's Trip"}
               </Text>
             </TouchableOpacity>
-
-            {/* GPS Active Indicator */}
-            {isTripStarted && (
-              <View style={styles.gpsStatusRow}>
-                <View
-                  style={[
-                    styles.gpsDot,
-                    { backgroundColor: isGpsActive ? "#22c55e" : "#f59e0b" },
-                  ]}
-                />
-                <Text
-                  style={[
-                    styles.gpsStatusText,
-                    { color: isGpsActive ? "#22c55e" : "#f59e0b" },
-                  ]}
-                >
-                  {isGpsActive
-                    ? "GPS Active — Students can see your location"
-                    : "Waiting for GPS permission…"}
-                </Text>
-              </View>
-            )}
-
             <Text style={styles.tripHint}>
-              {isTripStarted
-                ? "Tracking is live. Students can see you now."
-                : "Click start to begin tracking for students."}
+              {isTripStarted ? "Tracking is live. Students can see you now." : "Click start to begin tracking for students."}
             </Text>
+          </View>
+
+          {/* Today's Trip Section for Driver */}
+          <View style={styles.driverScheduleSection}>
+            <Text style={styles.sectionTitle}>Today's Assignments</Text>
+            <View style={styles.scheduleList}>
+              {todaysTrips.slice(0, 3).map((trip) => (
+                <View key={trip.id} style={styles.tripCard}>
+                  <View style={styles.tripRoute}>
+                    <Ionicons name="bus" size={20} color="#3B82F6" />
+                    <View>
+                      <Text style={styles.routeText}>{trip.route}</Text>
+                      <Text style={styles.tripTimeDetail}>{trip.time}</Text>
+                    </View>
+                  </View>
+                  <Ionicons name="chevron-forward" size={18} color="#CCC" />
+                </View>
+              ))}
+            </View>
           </View>
         </ScrollView>
         <Navigation />
@@ -795,183 +398,97 @@ export default function Dashboard() {
   if (organizationData.role?.toLowerCase() === "parent") {
     return (
       <SafeAreaView style={styles.container}>
-        <ScrollView
-          style={styles.scrollView}
-          showsVerticalScrollIndicator={false}
-        >
+        <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false}>
           {/* Premium Family Pass Header */}
-          <TouchableOpacity
-            activeOpacity={0.85}
-            onPress={() => router.push("/myprofile")}
+          <LinearGradient
+            colors={["#0F172A", "#1E293B"]}
+            style={styles.idCardContainer}
           >
-            <LinearGradient
-              colors={["#0F172A", "#1E293B"]}
-              style={styles.idCardContainer}
-            >
-              <View style={styles.idCardDecor} />
+            <View style={styles.idCardDecor} />
 
-              <View style={styles.idCardHeader}>
-                <View style={[styles.logoContainer, { backgroundColor: "#FFF" }]}>
-                  <Image
-                    source={organizationData.logo}
-                    style={styles.idLogo}
-                    resizeMode="contain"
-                    onError={(e) => {
-                      console.log("[Dashboard] Parent logo load error:", e.nativeEvent.error);
-                      setOrganizationData(prev => ({ ...prev, logo: require("../assets/images/logo.png") }));
-                    }}
-                  />
-                </View>
-                <TouchableOpacity
-                  style={styles.notificationBell}
-                  onPress={() => router.push("/notifications")}
-                >
-                  <Ionicons
-                    name="notifications-outline"
-                    size={22}
-                    color="#64748B"
-                  />
-                  <View style={styles.bellBadge} />
-                </TouchableOpacity>
+            <View style={styles.idCardHeader}>
+              <View style={[styles.logoContainer, { backgroundColor: "#FFF" }]}>
+                <Image
+                  source={require("../assets/images/logo.png")}
+                  style={styles.idLogo}
+                  resizeMode="contain"
+                />
               </View>
-
-              <View style={styles.idCardBody}>
-                <View style={styles.nameSection}>
-                  <Text style={[styles.idRoleLabel, { color: "#3B82F6" }]}>
-                    FAMILY PASS & OVERSIGHT
-                  </Text>
-                  <Text style={styles.idNameValue}>{organizationData.name}</Text>
-                  <View style={styles.emailContainer}>
-                    <Ionicons
-                      name="people-outline"
-                      size={12}
-                      color="#3B82F6"
-                      style={{ marginRight: 4 }}
-                    />
-                    <Text style={[styles.idEmailValue, { color: "#64748B" }]}> 
-                      Family Overview
-                    </Text>
-                  </View>
-                </View>
-
-                <View style={styles.statsRow}>
-                  <View style={styles.statBox}>
-                    <Text style={styles.statLabel}>CHILD</Text>
-                    <Text style={styles.statValue}>
-                      {organizationData.children &&
-                      organizationData.children.length > 0
-                        ? organizationData.children[0].name
-                        : "No Student Added"}
-                    </Text>
-                  </View>
-                  <View
-                    style={[
-                      styles.statDivider,
-                      { backgroundColor: "rgba(255, 255, 255, 0.1)" },
-                    ]}
-                  />
-                  <View style={styles.statBox}>
-                    <Text style={styles.statLabel}>PRIMARY ROUTE</Text>
-                    <Text style={styles.statValue}>
-                      {organizationData.children &&
-                      organizationData.children.length > 0
-                        ? organizationData.children[0].routeName || "Not Assigned"
-                        : "N/A"}
-                    </Text>
-                  </View>
-                  <View
-                    style={[
-                      styles.statDivider,
-                      { backgroundColor: "rgba(255, 255, 255, 0.1)" },
-                    ]}
-                  />
-                  <View style={styles.statBox}>
-                    <Text style={styles.statLabel}>BUS</Text>
-                    <Text style={styles.statValue}>
-                      {organizationData.children &&
-                      organizationData.children.length > 0
-                        ? organizationData.children[0].busNumber || "N/A"
-                        : "N/A"}
-                    </Text>
-                  </View>
-                </View>
-
-                <View
-                  style={[
-                    styles.statsRow,
-                    {
-                      marginTop: 10,
-                      borderTopWidth: 1,
-                      borderTopColor: "rgba(255,255,255,0.1)",
-                      paddingTop: 10,
-                    },
-                  ]}
-                >
-                  <View style={styles.statBox}>
-                    <Text style={styles.statLabel}>DRIVER</Text>
-                    <Text style={styles.statValue}>
-                      {organizationData.children &&
-                      organizationData.children.length > 0
-                        ? organizationData.children[0].driverName ||
-                          "Assigning..."
-                        : "N/A"}
-                    </Text>
-                  </View>
-                  <View
-                    style={[
-                      styles.statDivider,
-                      { backgroundColor: "rgba(255, 255, 255, 0.1)" },
-                    ]}
-                  />
-                  <View style={styles.statBox}>
-                    <Text style={styles.statLabel}>CONTACT</Text>
-                    <Text style={styles.statValue}>
-                      {organizationData.children &&
-                      organizationData.children.length > 0
-                        ? organizationData.children[0].driverPhone || "N/A"
-                        : "N/A"}
-                    </Text>
-                  </View>
-                </View>
-              </View>
-            </LinearGradient>
-          </TouchableOpacity>
-
-          {/* Track My Bus Button — Parent (uses first child's route) */}
-          {(() => {
-            const childRouteId =
-              organizationData.children && organizationData.children.length > 0
-                ? ((organizationData.children[0] as any).routeId ??
-                  (organizationData.children[0] as any).RouteId ??
-                  null)
-                : null;
-            return childRouteId ? (
               <TouchableOpacity
-                style={styles.trackBusBtn}
-                activeOpacity={0.85}
-                onPress={() => router.push(`/map?routeId=${childRouteId}`)}
+                style={styles.notificationBell}
+                onPress={() => router.push("/notifications")}
               >
-                <LinearGradient
-                  colors={["#165C9C", "#4FA3FF"]}
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 0 }}
-                  style={styles.trackBusBtnInner}
-                >
-                  <Ionicons name="navigate" size={22} color="#FFF" />
-                  <Text style={styles.trackBusBtnText}>
-                    {"Track Child's Bus Live"}
-                  </Text>
-                  <View style={styles.trackBusLiveDot} />
-                </LinearGradient>
+                <Ionicons name="notifications-outline" size={22} color="#64748B" />
+                <View style={styles.bellBadge} />
               </TouchableOpacity>
-            ) : null;
-          })()}
+            </View>
+
+            <View style={styles.idCardBody}>
+              <View style={styles.nameSection}>
+                <Text style={[styles.idRoleLabel, { color: "#3B82F6" }]}>FAMILY PASS & OVERSIGHT</Text>
+                <Text style={styles.idNameValue}>{organizationData.name}</Text>
+                <View style={styles.emailContainer}>
+                  <Ionicons name="people-outline" size={12} color="#3B82F6" style={{ marginRight: 4 }} />
+                  <Text style={[styles.idEmailValue, { color: "#64748B" }]}>Viewing Family Activity</Text>
+                </View>
+              </View>
+
+              <View style={styles.statsRow}>
+                <View style={styles.statBox}>
+                  <Text style={styles.statLabel}>CHILD</Text>
+                  <Text style={styles.statValue}>
+                    {organizationData.children && organizationData.children.length > 0
+                      ? organizationData.children[0].name
+                      : "No Student Added"}
+                  </Text>
+                </View>
+                <View style={[styles.statDivider, { backgroundColor: "rgba(255, 255, 255, 0.1)" }]} />
+                <View style={styles.statBox}>
+                  <Text style={styles.statLabel}>PRIMARY ROUTE</Text>
+                  <Text style={styles.statValue}>
+                    {organizationData.children && organizationData.children.length > 0
+                      ? organizationData.children[0].routeName || "Not Assigned"
+                      : "N/A"}
+                  </Text>
+                </View>
+                <View style={[styles.statDivider, { backgroundColor: "rgba(255, 255, 255, 0.1)" }]} />
+                <View style={styles.statBox}>
+                  <Text style={styles.statLabel}>BUS</Text>
+                  <Text style={styles.statValue}>
+                    {organizationData.children && organizationData.children.length > 0
+                      ? organizationData.children[0].busNumber || "N/A"
+                      : "N/A"}
+                  </Text>
+                </View>
+              </View>
+
+              <View style={[styles.statsRow, { marginTop: 10, borderTopWidth: 1, borderTopColor: 'rgba(255,255,255,0.1)', paddingTop: 10 }]}>
+                <View style={styles.statBox}>
+                  <Text style={styles.statLabel}>DRIVER</Text>
+                  <Text style={styles.statValue}>
+                    {organizationData.children && organizationData.children.length > 0
+                      ? organizationData.children[0].driverName || "Assigning..."
+                      : "N/A"}
+                  </Text>
+                </View>
+                <View style={[styles.statDivider, { backgroundColor: "rgba(255, 255, 255, 0.1)" }]} />
+                <View style={styles.statBox}>
+                  <Text style={styles.statLabel}>CONTACT</Text>
+                  <Text style={styles.statValue}>
+                    {organizationData.children && organizationData.children.length > 0
+                      ? organizationData.children[0].driverPhone || "N/A"
+                      : "N/A"}
+                  </Text>
+                </View>
+              </View>
+            </View>
+          </LinearGradient>
 
           {/* Billing Overview Section */}
           <View style={styles.billingSection}>
             <View style={styles.sectionHeader}>
               <Text style={styles.sectionTitle}>Billing & Payments</Text>
-              <TouchableOpacity onPress={() => router.push("/payment")}> 
+              <TouchableOpacity onPress={() => router.push("/billing")}>
                 <Text style={styles.viewAllBtn}>History</Text>
               </TouchableOpacity>
             </View>
@@ -982,22 +499,42 @@ export default function Dashboard() {
               <View style={styles.billRow}>
                 <View style={styles.billItem}>
                   <Text style={styles.billLabel}>Balance Due</Text>
-                  <Text style={styles.billValue}>Rs. {balanceDue.toLocaleString()}</Text>
+                  <Text style={styles.billValue}>Rs. 2,500</Text>
                 </View>
                 <View style={styles.billDivider} />
                 <View style={styles.billItem}>
                   <Text style={styles.billLabel}>Next Due</Text>
-                  <Text style={styles.billValue}>{nextDueDate}</Text>
+                  <Text style={styles.billValue}>Feb 28</Text>
                 </View>
               </View>
-              <TouchableOpacity style={styles.payBtn} onPress={() => router.push("/payment")}>
+              <TouchableOpacity style={styles.payBtn}>
                 <Text style={styles.payBtnText}>Pay Now</Text>
                 <Ionicons name="chevron-forward" size={16} color="#FFF" />
               </TouchableOpacity>
             </LinearGradient>
           </View>
 
-          {/* Quick Info Section removed (Family Activity) */}
+          {/* Quick Info Section */}
+          <View style={styles.familyActivitySection}>
+            <Text style={styles.sectionTitle}>Family Activity</Text>
+            <View style={styles.activityCard}>
+              <View style={styles.activityIcon}>
+                <Ionicons name="bus" size={24} color="#3B82F6" />
+              </View>
+              <View style={styles.activityInfo}>
+                <Text style={styles.activityText}>
+                  {organizationData.children && organizationData.children.length > 0
+                    ? `${organizationData.children[0].name} has boarded ${organizationData.children[0].routeName || "Bus"}`
+                    : "No student activity to show"}
+                </Text>
+                <Text style={styles.activityTime}>Just Now</Text>
+              </View>
+              <View style={styles.liveIndicator}>
+                <View style={styles.liveDot} />
+                <Text style={styles.liveLabel}>Live</Text>
+              </View>
+            </View>
+          </View>
         </ScrollView>
         <Navigation />
       </SafeAreaView>
@@ -1007,147 +544,82 @@ export default function Dashboard() {
   if (organizationData.role?.toLowerCase() === "student") {
     return (
       <SafeAreaView style={styles.container}>
-        <ScrollView
-          style={styles.scrollView}
-          showsVerticalScrollIndicator={false}
-        >
+        <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false}>
           {/* Premium Student Pass Header */}
-          <TouchableOpacity
-            activeOpacity={0.85}
-            onPress={() => setShowProfileModal(true)}
+          <LinearGradient
+            colors={["#0F172A", "#1E293B"]}
+            style={styles.idCardContainer}
           >
-            <LinearGradient
-              colors={["#0F172A", "#1E293B"]}
-              style={styles.idCardContainer}
-            >
-              <View style={styles.idCardDecor} />
+            {/* Decorative background circle */}
+            <View style={styles.idCardDecor} />
 
-              <View style={styles.idCardHeader}>
-                <View style={styles.logoContainer}>
-                  <Image
-                    source={require("../assets/images/logo.png")}
-                    style={styles.idLogo}
-                    resizeMode="contain"
-                  />
+            <View style={styles.idCardHeader}>
+              <View style={styles.logoContainer}>
+                <Image
+                  source={require("../assets/images/logo.png")}
+                  style={styles.idLogo}
+                  resizeMode="contain"
+                />
+              </View>
+              <TouchableOpacity
+                style={styles.notificationBell}
+                onPress={() => router.push("/notifications")}
+              >
+                <Ionicons name="notifications-outline" size={22} color="#64748B" />
+                <View style={styles.bellBadge} />
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.idCardBody}>
+              <View style={styles.nameSection}>
+                <Text style={styles.idRoleLabel}>DIGITAL STUDENT PASS</Text>
+                <Text style={styles.idNameValue}>{organizationData.name}</Text>
+                <View style={styles.emailContainer}>
+                  <Ionicons name="mail-outline" size={12} color="#3B82F6" style={{ marginRight: 4 }} />
+                  <Text style={styles.idEmailValue}>{organizationData.email}</Text>
                 </View>
-                <TouchableOpacity
-                  style={styles.notificationBell}
-                  onPress={() => router.push("/notifications")}
-                >
-                  <Ionicons
-                    name="notifications-outline"
-                    size={22}
-                    color="#64748B"
-                  />
-                  <View style={styles.bellBadge} />
-                </TouchableOpacity>
               </View>
 
-              <View style={styles.idCardBody}>
-                <View style={styles.nameSection}>
-                  <Text style={styles.idRoleLabel}>DIGITAL STUDENT PASS</Text>
-                  <Text style={styles.idNameValue}>{organizationData.name}</Text>
-                  <View style={styles.emailContainer}>
-                    <Ionicons
-                      name="mail-outline"
-                      size={12}
-                      color="#3B82F6"
-                      style={{ marginRight: 4 }}
-                    />
-                    <Text style={styles.idEmailValue}>
-                      {organizationData.email}
-                    </Text>
-                  </View>
+              <View style={styles.statsRow}>
+                <View style={styles.statBox}>
+                  <Text style={styles.statLabel}>ROUTE</Text>
+                  <Text style={styles.statValue}>{organizationData.routeName || "N/A"}</Text>
                 </View>
-
-                <View style={styles.statsRow}>
-                  <View style={styles.statBox}>
-                    <Text style={styles.statLabel}>ROUTE</Text>
-                    <Text style={styles.statValue}>
-                      {organizationData.routeName || "N/A"}
-                    </Text>
-                  </View>
-                  <View style={styles.statDivider} />
-                  <View style={styles.statBox}>
-                    <Text style={styles.statLabel}>DRIVER</Text>
-                    <Text style={styles.statValue}>
-                      {organizationData.driverName || "N/A"}
-                    </Text>
-                  </View>
-                  <View style={styles.statDivider} />
-                  <View style={styles.statBox}>
-                    <Text style={styles.statLabel}>BUS</Text>
-                    <Text style={styles.statValue}>
-                      {organizationData.busNumber || "N/A"}
-                    </Text>
-                  </View>
+                <View style={styles.statDivider} />
+                <View style={styles.statBox}>
+                  <Text style={styles.statLabel}>DRIVER</Text>
+                  <Text style={styles.statValue}>{organizationData.driverName || "N/A"}</Text>
                 </View>
-
-                <View
-                  style={[
-                    styles.statsRow,
-                    {
-                      marginTop: 10,
-                      borderTopWidth: 1,
-                      borderTopColor: "rgba(255,255,255,0.1)",
-                      paddingTop: 10,
-                    },
-                  ]}
-                >
-                  <View style={styles.statBox}>
-                    <Text style={styles.statLabel}>CONTACT</Text>
-                    <Text style={styles.statValue}>
-                      {organizationData.driverPhone || "N/A"}
-                    </Text>
-                  </View>
+                <View style={styles.statDivider} />
+                <View style={styles.statBox}>
+                  <Text style={styles.statLabel}>BUS</Text>
+                  <Text style={styles.statValue}>{organizationData.busNumber || "N/A"}</Text>
                 </View>
               </View>
-            </LinearGradient>
-          </TouchableOpacity>
 
-          {/* Track My Bus Button — Student (always visible; map resolves route from DB) */}
-          <TouchableOpacity
-            style={styles.trackBusBtn}
-            activeOpacity={0.85}
-            onPress={() =>
-              organizationData.assignedRouteId
-                ? router.push(
-                    `/map?routeId=${organizationData.assignedRouteId}`,
-                  )
-                : router.push("/map")
-            }
-          >
-            <LinearGradient
-              colors={["#165C9C", "#4FA3FF"]}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 0 }}
-              style={styles.trackBusBtnInner}
-            >
-              <Ionicons name="navigate" size={22} color="#FFF" />
-              <Text style={styles.trackBusBtnText}>Track My Bus Live</Text>
-              <View style={styles.trackBusLiveDot} />
-            </LinearGradient>
-          </TouchableOpacity>
+              <View style={[styles.statsRow, { marginTop: 10, borderTopWidth: 1, borderTopColor: 'rgba(255,255,255,0.1)', paddingTop: 10 }]}>
+                <View style={styles.statBox}>
+                  <Text style={styles.statLabel}>CONTACT</Text>
+                  <Text style={styles.statValue}>{organizationData.driverPhone || "N/A"}</Text>
+                </View>
+              </View>
+            </View>
+          </LinearGradient>
 
           {/* Bus Deployment Section with consistent styling */}
           <View style={styles.attendanceContainer}>
             <View style={styles.sectionHeader}>
               <View>
                 <Text style={styles.atTitle}>Bus Start Schedule</Text>
-                <Text style={styles.atSubtitle}>
-                  Check daily departure times
-                </Text>
+                <Text style={styles.atSubtitle}>Check daily departure times</Text>
               </View>
               <View style={styles.atYearBtn}>
-                <Text style={styles.atYearText}>
-                  {new Date().toLocaleString("default", { month: "short" })}{" "}
-                  {new Date().getFullYear()}
-                </Text>
+                <Text style={styles.atYearText}>Feb 2026</Text>
               </View>
             </View>
             <View style={styles.simpleCalendar}>
               <View style={styles.weekRow}>
-                {["M", "T", "W", "T", "F", "S", "S"].map((d, i) => (
+                {['M', 'T', 'W', 'T', 'F', 'S', 'S'].map((d, i) => (
                   <View key={i} style={styles.dayCol}>
                     <Text style={styles.dayLabel}>{d}</Text>
                   </View>
@@ -1155,67 +627,39 @@ export default function Dashboard() {
               </View>
               <View style={styles.daysGrid}>
                 {(() => {
-                  const now = new Date();
-                  const year = now.getFullYear();
-                  const month = now.getMonth();
-                  const today = now.getDate();
-                  
-                  const firstDayOfMonth = new Date(year, month, 1).getDay(); // 0 is Sunday
+                  const firstDayOfMonth = new Date(2026, 1, 1).getDay(); // 0 is Sunday
                   // Our week row starts with Monday
                   const paddingDays = firstDayOfMonth === 0 ? 6 : firstDayOfMonth - 1;
-                  const daysInMonth = new Date(year, month + 1, 0).getDate();
+                  const daysInMonth = 28; // Feb 2026
 
                   const cells = [];
                   // Add empty padding cells
                   for (let p = 0; p < paddingDays; p++) {
-                    cells.push(
-                      <View key={`pad-${p}`} style={styles.dayCell} />,
-                    );
+                    cells.push(<View key={`pad-${p}`} style={styles.dayCell} />);
                   }
 
                   // Add day cells
                   for (let day = 1; day <= daysInMonth; day++) {
-                    const isToday = day === today;
-                    const date = new Date(year, month, day);
-                    const dayNamesShort = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-                    const currentDayName = dayNamesShort[date.getDay()];
+                    const isToday = day === 5;
+                    const date = new Date(2026, 1, day);
+                    const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+                    const currentDayName = dayNames[date.getDay()];
 
-                    const activeDays =
-                      organizationData.scheduleDays === "Daily"
-                        ? dayNamesShort
-                        : organizationData.scheduleDays
-                            ?.split(",")
-                            .map((d) => d.trim()) || [
-                            "Mon",
-                            "Tue",
-                            "Wed",
-                            "Thu",
-                            "Fri",
-                          ];
+                    const activeDays = organizationData.scheduleDays === "Daily"
+                      ? dayNames
+                      : (organizationData.scheduleDays?.split(",").map(d => d.trim()) || ['Mon', 'Tue', 'Wed', 'Thu', 'Fri']);
 
                     const hasStartTime = activeDays.includes(currentDayName);
 
                     cells.push(
-                      <View
-                        key={`day-${day}`}
-                        style={[styles.dayCell, isToday && styles.todayCell]}
-                      >
-                        <Text
-                          style={[styles.dayText, isToday && styles.todayText]}
-                        >
-                          {day}
-                        </Text>
+                      <View key={`day-${day}`} style={[styles.dayCell, isToday && styles.todayCell]}>
+                        <Text style={[styles.dayText, isToday && styles.todayText]}>{day}</Text>
                         {hasStartTime && (
-                          <Text
-                            style={[
-                              styles.startTimeLabel,
-                              isToday && styles.todayStartTime,
-                            ]}
-                          >
+                          <Text style={[styles.startTimeLabel, isToday && styles.todayStartTime]}>
                             {organizationData.startTime || "07:30"}
                           </Text>
                         )}
-                      </View>,
+                      </View>
                     );
                   }
                   return cells;
@@ -1225,19 +669,6 @@ export default function Dashboard() {
           </View>
         </ScrollView>
         <Navigation />
-
-        <StudentProfileModal
-          visible={showProfileModal}
-          onClose={() => setShowProfileModal(false)}
-          studentData={{
-            name: organizationData.name,
-            email: organizationData.email,
-            routeName: organizationData.routeName,
-            driverName: organizationData.driverName,
-            busNumber: organizationData.busNumber,
-            driverPhone: organizationData.driverPhone,
-          }}
-        />
       </SafeAreaView>
     );
   }
@@ -1247,7 +678,6 @@ export default function Dashboard() {
       <ScrollView
         style={styles.scrollView}
         showsVerticalScrollIndicator={false}
-        contentContainerStyle={{ paddingBottom: 100 }}
       >
         {/* Organization Card */}
         <TouchableOpacity
@@ -1312,98 +742,27 @@ export default function Dashboard() {
             ))}
           </View>
         </View>
- {/* Today's Trip Schedule Section */}
-      <View style={styles.scheduleSection}>
-        <Text style={styles.sectionTitle}>{"Today's Trip Schedule"}</Text>
-        
-        {tripSchedule.length > 0 ? (
-          <View style={styles.scheduleTable}>
-            {/* Table Header */}
-            <View style={styles.tableHeader}>
-              <View style={styles.tableCellLeft}>
-                <Text style={styles.tableHeaderText}>Route</Text>
-              </View>
-              <View style={styles.tableCellRight}>
-                <Text style={styles.tableHeaderText}>Time</Text>
-              </View>
-            </View>
-            
-            {/* Table Rows */}
-            {tripSchedule.map((trip, index) => (
-              <View key={index} style={styles.tableRow}>
-                <View style={styles.tableCellLeft}>
-                  <Text style={styles.tableCell}>{trip.route}</Text>
+
+        {/* Today's Trip Schedule Section */}
+        <View style={styles.scheduleSection}>
+          <Text style={styles.sectionTitle}>Today's Trip Schedule</Text>
+          <View style={styles.scheduleList}>
+            {todaysTrips.map((trip) => (
+              <View key={trip.id} style={styles.tripCard}>
+                <View style={styles.tripRoute}>
+                  <Ionicons name="bus" size={20} color="#3B82F6" />
+                  <Text style={styles.routeText}>{trip.route}</Text>
                 </View>
-                <View style={styles.tableCellRight}>
-                  <Text style={styles.tableCell}>{trip.time}</Text>
-                </View>
+                <Text style={styles.timeText}>{trip.time}</Text>
               </View>
             ))}
           </View>
-        ) : (
-          <View style={styles.noScheduleContainer}>
-            <Text style={styles.noScheduleText}>No trips scheduled for today</Text>
-          </View>
-        )}
-      </View>
-      </ScrollView>
-
-      {/* Send New Notice Modal */}
-      <Modal
-        animationType="slide"
-        transparent={true}
-        visible={showNoticeModal}
-        onRequestClose={() => setShowNoticeModal(false)}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Send New Notice</Text>
-              <TouchableOpacity onPress={() => setShowNoticeModal(false)}>
-                <Ionicons name="close" size={24} color="#1E293B" />
-              </TouchableOpacity>
-            </View>
-
-            <Text style={styles.label}>Notice Header (Title)</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="e.g. Weather Alert, Schedule Change"
-              value={noticeHeader}
-              onChangeText={setNoticeHeader}
-              placeholderTextColor="#B0BCC4"
-            />
-
-            <Text style={styles.label}>Message Text</Text>
-            <TextInput
-              style={[styles.input, styles.textArea]}
-              placeholder="Type your notice message here..."
-              multiline
-              numberOfLines={4}
-              value={noticeMessage}
-              onChangeText={setNoticeMessage}
-              placeholderTextColor="#B0BCC4"
-            />
-
-            <TouchableOpacity
-              style={[styles.sendButton, isSendingNotice && styles.disabledButton]}
-              onPress={handleSendNotice}
-              disabled={isSendingNotice}
-            >
-              {isSendingNotice ? (
-                <ActivityIndicator color="#FFF" />
-              ) : (
-                <Text style={styles.sendButtonText}>Send to All Users</Text>
-              )}
-            </TouchableOpacity>
-          </View>
         </View>
-      </Modal>
-
+      </ScrollView>
       <Navigation />
     </SafeAreaView>
   );
-} 
-
+}
 
 const styles = StyleSheet.create({
   container: {
@@ -1684,7 +1043,65 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: "bold",
   },
-  /* Family Activity styles removed */
+  familyActivitySection: {
+    margin: 20,
+    marginTop: 0,
+  },
+  activityCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#FFF",
+    padding: 16,
+    borderRadius: 20,
+    elevation: 2,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 4,
+  },
+  activityIcon: {
+    width: 48,
+    height: 48,
+    borderRadius: 14,
+    backgroundColor: "#EFF6FF",
+    justifyContent: "center",
+    alignItems: "center",
+    marginRight: 16,
+  },
+  activityInfo: {
+    flex: 1,
+  },
+  activityText: {
+    fontSize: 15,
+    fontWeight: "600",
+    color: "#1F2937",
+  },
+  activityTime: {
+    fontSize: 12,
+    color: "#6B7280",
+    marginTop: 2,
+  },
+  liveIndicator: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#E0F2FE",
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 8,
+    gap: 4,
+  },
+  liveDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: "#2563EB",
+  },
+  liveLabel: {
+    fontSize: 10,
+    fontWeight: "bold",
+    color: "#1D4ED8",
+    textTransform: "uppercase",
+  },
   tripControlSection: {
     margin: 20,
     marginTop: 0,
@@ -1858,214 +1275,4 @@ const styles = StyleSheet.create({
     position: "absolute",
     bottom: 6,
   },
-  // GPS active indicator
-  gpsStatusRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    marginTop: 10,
-    gap: 8,
-  },
-  gpsDot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-  },
-  gpsStatusText: {
-    fontSize: 13,
-    fontWeight: "600",
-  },
-  // Track My Bus button
-  trackBusBtn: {
-    marginHorizontal: 16,
-    marginBottom: 16,
-    borderRadius: 16,
-    overflow: "hidden",
-    elevation: 4,
-    shadowColor: "#165C9C",
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.3,
-    shadowRadius: 6,
-  },
-  trackBusBtnInner: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    paddingVertical: 16,
-    paddingHorizontal: 20,
-    gap: 10,
-  },
-  trackBusBtnText: {
-    color: "#FFF",
-    fontSize: 16,
-    fontWeight: "700",
-    flex: 1,
-    textAlign: "center",
-  },
-  trackBusLiveDot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-    backgroundColor: "#22c55e",
-    shadowColor: "#22c55e",
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.9,
-    shadowRadius: 4,
-  },
-  pickupCard: {
-    backgroundColor: "#FFF",
-    padding: 20,
-    borderRadius: 20,
-    elevation: 3,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 8,
-    borderWidth: 1,
-    borderColor: "#F1F5F9",
-  },
-  pickupHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 16,
-    marginBottom: 16,
-  },
-  pickupLabel: {
-    fontSize: 10,
-    fontWeight: "800",
-    color: "#64748B",
-    letterSpacing: 1,
-  },
-  pickupValue: {
-    fontSize: 18,
-    fontWeight: "bold",
-    color: "#1E293B",
-    marginTop: 2,
-  },
-  pickupTimeRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    paddingTop: 12,
-    borderTopWidth: 1,
-    borderTopColor: "#F1F5F9",
-  },
-  pickupTimeText: {
-    fontSize: 14,
-    color: "#64748B",
-    fontWeight: "500",
-  },
-  scheduleTable: {
-    backgroundColor: "#fff",
-    borderRadius: 12,
-    overflow: "hidden",
-    borderWidth: 1,
-    borderColor: "#728dbb",
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.15,
-    shadowRadius: 4,
-    elevation: 3,
-  },
-  tableHeader: {
-    flexDirection: "row",
-    backgroundColor: "#759bcd",
-  },
-  tableHeaderText: {
-    fontSize: 15,
-    fontWeight: "bold",
-    color: "#1E3A5F",
-  },
-  tableRow: {
-    flexDirection: "row",
-    borderBottomWidth: 1,
-    borderBottomColor: "#9CA3AF",
-  },
-  tableCellLeft: {
-    flex: 1,
-    paddingHorizontal: 16,
-    paddingVertical: 14,
-    borderRightWidth: 1,
-    borderRightColor: "#9CA3AF",
-  },
-  tableCellRight: {
-    flex: 1,
-    paddingHorizontal: 16,
-    paddingVertical: 14,
-  },
-  tableCell: {
-    fontSize: 14,
-    color: "#333",
-  },
-  noScheduleContainer: {
-    backgroundColor: "#fff",
-    padding: 24,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: "#9CA3AF",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  noScheduleText: {
-    fontSize: 14,
-    color: "#999",
-    fontStyle: "italic",
-  },
-  // Modal Styles
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.5)',
-    justifyContent: 'flex-end',
-  },
-  modalContent: {
-    backgroundColor: '#FFF',
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
-    padding: 24,
-    minHeight: 400,
-  },
-  modalHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 24,
-  },
-  modalTitle: {
-    fontSize: 20,
-    fontWeight: 'bold',
-    color: '#1E293B',
-  },
-  label: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#64748B',
-    marginBottom: 8,
-  },
-  input: {
-    backgroundColor: '#F1F5F9',
-    borderRadius: 12,
-    padding: 12,
-    fontSize: 16,
-    marginBottom: 20,
-    color: '#1E293B',
-  },
-  textArea: {
-    height: 120,
-    textAlignVertical: 'top',
-  },
-  sendButton: {
-    backgroundColor: '#3B82F6',
-    padding: 16,
-    borderRadius: 12,
-    alignItems: 'center',
-    marginTop: 10,
-  },
-  disabledButton: {
-    opacity: 0.6,
-  },
-  sendButtonText: {
-    color: '#FFF',
-    fontSize: 16,
-    fontWeight: 'bold',
-  }
 });

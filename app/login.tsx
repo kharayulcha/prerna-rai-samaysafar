@@ -3,15 +3,15 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useRouter } from "expo-router";
 import React, { useState } from "react";
 import {
-    Alert,
-    Image,
-    KeyboardAvoidingView,
-    Platform,
-    Pressable,
-    StyleSheet,
-    Text,
-    TextInput,
-    View,
+  Alert,
+  Image,
+  KeyboardAvoidingView,
+  Platform,
+  Pressable,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
 } from "react-native";
 
 const PRIMARY_BLUE = "#4FA3FF";
@@ -52,17 +52,15 @@ export default function LoginScreen() {
       });
 
       const text = await res.text();
+      if (!res.ok) {
+        throw new Error(text || "Login failed");
+      }
+
       let data: any = null;
       try {
         data = text ? JSON.parse(text) : null;
       } catch {
-        // ignore parse error; we'll fall back to raw text
-      }
-
-      if (!res.ok) {
-        const serverMessage =
-          data?.message || data?.error || (text && text.trim());
-        throw new Error(serverMessage || "Invalid credentials");
+        // ignore parse error, we'll still navigate but no token stored
       }
 
       const token = data?.token ?? data?.accessToken ?? data?.jwt;
@@ -74,40 +72,12 @@ export default function LoginScreen() {
 
         // Store routeId and busId from the response body (they aren't in the JWT)
         if (data?.user) {
-          const { routeId, busId, organization } = data.user;
-          console.log("[Login] Response user data:", {
-            routeId,
-            busId,
-            hasOrganization: !!organization,
-            logoLength: organization?.logo ? organization.logo.length : 0,
-          });
+          const { routeId, busId } = data.user;
           if (routeId !== undefined && routeId !== null) {
             await AsyncStorage.setItem("assignedRouteId", String(routeId));
           }
           if (busId !== undefined && busId !== null) {
             await AsyncStorage.setItem("assignedBusId", String(busId));
-          }
-
-          // Store organization logo if available
-          if (organization?.logo) {
-            console.log("[Login] Storing organization logo...");
-            await AsyncStorage.setItem("organizationLogo", organization.logo);
-          } else {
-            console.log("[Login] No organization logo found in response");
-          }
-
-          // For parents: store children route IDs so map can use them
-          if (Array.isArray(data.user.children)) {
-            const childRouteIds = data.user.children
-              .map((c: any) => c.routeId)
-              .filter((id: any) => id !== null && id !== undefined);
-            if (childRouteIds.length > 0) {
-              await AsyncStorage.setItem("childrenRouteIds", JSON.stringify(childRouteIds));
-              // If parent has no direct routeId, use the first child's routeId
-              if (!routeId && childRouteIds[0]) {
-                await AsyncStorage.setItem("assignedRouteId", String(childRouteIds[0]));
-              }
-            }
           }
         }
       }
