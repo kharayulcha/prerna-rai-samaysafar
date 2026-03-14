@@ -1,11 +1,7 @@
 import { Ionicons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import React, {
-  useCallback,
-  useEffect,
-  useMemo,
-  useState
-} from "react";
+import { useRouter } from "expo-router";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -17,14 +13,15 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
-  View
+  View,
 } from "react-native";
 import Navigation from "../components/navigation";
+import { useLocationTracking } from "../hooks/use-location-tracking";
 
 const PRIMARY_BLUE = "#4FA3FF";
 const DEEP_BLUE = "#165C9C";
 const API_BASE_URL =
-  process.env.EXPO_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
+  process.env.EXPO_PUBLIC_API_BASE_URL ?? "http://192.168.1.73:8004";
 
 interface DriverItem {
   id: string;
@@ -35,6 +32,7 @@ interface DriverItem {
   routeId?: number;
   busId?: number;
   busNumber?: string;
+  status?: string;
 }
 
 interface RouteItem {
@@ -69,13 +67,20 @@ interface TokenPayload {
 }
 
 export default function Driver() {
-  const [activeTab, setActiveTab] = useState<"drivers" | "buses">("drivers");
+  const router = useRouter();
+  const { isTracking, currentLocation, startTracking, stopTracking } =
+    useLocationTracking();
+  const [activeTab, setActiveTab] = useState<"drivers" | "buses" | "trips">(
+    "drivers",
+  );
   const [query, setQuery] = useState("");
   const [drivers, setDrivers] = useState<DriverItem[]>([]);
   const [buses, setBuses] = useState<BusItem[]>([]);
+  const [activeTrips, setActiveTrips] = useState<any[]>([]);
   const [routes, setRoutes] = useState<RouteItem[]>([]);
   const [loadingDrivers, setLoadingDrivers] = useState(false);
   const [loadingBuses, setLoadingBuses] = useState(false);
+  const [loadingTrips, setLoadingTrips] = useState(false);
   const [loadingRoutes, setLoadingRoutes] = useState(false);
   const [addVisible, setAddVisible] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
@@ -129,7 +134,14 @@ export default function Driver() {
     setEditingBus(null);
     setEditingDriver(null);
     setBusForm({ busNumber: "", model: "" });
-    setDriverForm({ name: "", email: "", phone: "", password: "", routeId: "", busId: "" });
+    setDriverForm({
+      name: "",
+      email: "",
+      phone: "",
+      password: "",
+      routeId: "",
+      busId: "",
+    });
   };
 
   const getStoredToken = useCallback(async () => {
@@ -140,9 +152,13 @@ export default function Driver() {
     return token;
   }, []);
 
-  const getAuthHeaders = useCallback(async (): Promise<Record<string, string>> => {
+  const getAuthHeaders = useCallback(async (): Promise<
+    Record<string, string>
+  > => {
     const rawToken = await getStoredToken();
-    const token = rawToken?.startsWith("Bearer ") ? rawToken.slice(7) : rawToken;
+    const token = rawToken?.startsWith("Bearer ")
+      ? rawToken.slice(7)
+      : rawToken;
     return token ? { Authorization: `Bearer ${token}` } : {};
   }, [getStoredToken]);
 
@@ -230,6 +246,7 @@ export default function Driver() {
       const list = Array.isArray(data)
         ? data
         : (data?.drivers ?? data?.Drivers ?? data?.data ?? []);
+
       const mapped: DriverItem[] = list.map((item: any) => ({
         id:
           item?.UserId?.toString() ??
@@ -242,6 +259,12 @@ export default function Driver() {
         routeId: item?.RouteId ?? item?.routeId,
         busId: item?.BusId ?? item?.busId,
         busNumber: item?.BusNumber ?? item?.busNumber ?? "",
+        status:
+          item?.Status ??
+          item?.status ??
+          item?.DriverStatus ??
+          item?.driverStatus ??
+          "Active",
       }));
       setDrivers(mapped);
     } catch (error) {
@@ -285,6 +308,31 @@ export default function Driver() {
     }
   }, [getAuthHeaders, getOrgIdFromToken]);
 
+  const fetchActiveTrips = useCallback(async () => {
+    try {
+      setLoadingTrips(true);
+      const authHeaders = await getAuthHeaders();
+      // Using /get-buses which returns the full status including active trips
+      const res = await fetch(`${API_BASE_URL}/api/buses/get-buses`, {
+        headers: authHeaders,
+      });
+      const data = await res.json();
+      const list = Array.isArray(data) ? data : (data?.buses ?? []);
+
+      // Filter for buses that actually have an active trip
+      const active = list.filter(
+        (bus: any) =>
+          bus.Status === "active" ||
+          (bus.trips && bus.trips[0]?.Status === "active"),
+      );
+      setActiveTrips(active);
+    } catch (error) {
+      console.error("Error fetching active trips:", error);
+    } finally {
+      setLoadingTrips(false);
+    }
+  }, [getAuthHeaders]);
+
   const fetchRoutes = useCallback(async () => {
     try {
       setLoadingRoutes(true);
@@ -312,11 +360,17 @@ export default function Driver() {
     fetchDrivers();
     fetchBuses();
     fetchRoutes();
+    fetchActiveTrips();
     refreshAdminStatus();
-  }, [fetchBuses, fetchDrivers, fetchRoutes, refreshAdminStatus]);
+  }, [
+    fetchBuses,
+    fetchDrivers,
+    fetchRoutes,
+    fetchActiveTrips,
+    refreshAdminStatus,
+  ]);
 
   const handleAddDriver = async () => {
-    console.log("Add Driver clicked");
     try {
       if (
         !driverForm.name ||
@@ -343,26 +397,30 @@ export default function Driver() {
         }),
       });
 
-      console.log("Create driver response status:", res.status);
-
       if (!res.ok) {
         const text = await res.text();
-        console.error("Create driver failed:", text);
+        let errorMessage = "Failed to add driver";
         try {
           const json = JSON.parse(text);
-          throw new Error(json.message || "Failed to add driver");
+          errorMessage = json.message || "Failed to add driver";
         } catch (e) {
-          throw new Error(text || "Failed to add driver");
+          errorMessage = text || "Failed to add driver";
         }
+        throw new Error(errorMessage);
       }
 
-      console.log("Create driver success");
-      setDriverForm({ name: "", email: "", phone: "", password: "", routeId: "", busId: "" });
+      setDriverForm({
+        name: "",
+        email: "",
+        phone: "",
+        password: "",
+        routeId: "",
+        busId: "",
+      });
       closeAdd();
       fetchDrivers();
       Alert.alert("Success", "Driver created successfully");
     } catch (error: any) {
-      console.error("Add driver error:", error);
       Alert.alert("Error", error?.message ?? "Failed to add driver.");
     }
   };
@@ -458,7 +516,11 @@ export default function Driver() {
         "Confirm Delete",
         "Are you sure you want to delete this bus?",
         [
-          { text: "Cancel", style: "cancel", onPress: () => console.log("Delete Bus cancelled") },
+          {
+            text: "Cancel",
+            style: "cancel",
+            onPress: () => console.log("Delete Bus cancelled"),
+          },
           {
             text: "Delete",
             style: "default",
@@ -488,7 +550,7 @@ export default function Driver() {
               }
             },
           },
-        ]
+        ],
       );
     } catch (error: any) {
       console.error("Delete wrapper error:", error);
@@ -527,7 +589,7 @@ export default function Driver() {
           method: "PUT",
           headers: { "Content-Type": "application/json", ...authHeaders },
           body: JSON.stringify(body),
-        }
+        },
       );
 
       if (!res.ok) {
@@ -535,7 +597,14 @@ export default function Driver() {
         throw new Error(text || "Failed to update driver");
       }
 
-      setDriverForm({ name: "", email: "", phone: "", password: "", routeId: "", busId: "" });
+      setDriverForm({
+        name: "",
+        email: "",
+        phone: "",
+        password: "",
+        routeId: "",
+        busId: "",
+      });
       setEditingDriver(null);
       setModalMode("add");
       closeAdd();
@@ -560,7 +629,11 @@ export default function Driver() {
         "Confirm Delete",
         "Are you sure you want to delete this driver?",
         [
-          { text: "Cancel", style: "cancel", onPress: () => console.log("Delete Driver cancelled") },
+          {
+            text: "Cancel",
+            style: "cancel",
+            onPress: () => console.log("Delete Driver cancelled"),
+          },
           {
             text: "Delete",
             style: "default",
@@ -573,7 +646,7 @@ export default function Driver() {
                   {
                     method: "DELETE",
                     headers: { ...authHeaders },
-                  }
+                  },
                 );
 
                 console.log("Delete driver status:", res.status);
@@ -591,12 +664,12 @@ export default function Driver() {
                 console.error("Delete handler error:", error);
                 Alert.alert(
                   "Error",
-                  error?.message ?? "Failed to delete driver."
+                  error?.message ?? "Failed to delete driver.",
                 );
               }
             },
           },
-        ]
+        ],
       );
     } catch (error: any) {
       console.error("Delete wrapper error:", error);
@@ -604,10 +677,113 @@ export default function Driver() {
     }
   };
 
+  // Start a trip and begin GPS tracking
+  const handleStartTrip = async (
+    driverId: string,
+    routeId: number,
+    busId: number,
+  ) => {
+    try {
+      const authHeaders = await getAuthHeaders();
+      const token = await getStoredToken();
+      const res = await fetch(`${API_BASE_URL}/api/trips/start`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders },
+        body: JSON.stringify({ routeId, busId }),
+      });
+
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(text || "Failed to start trip");
+      }
+
+      const data = await res.json();
+      const tripId = data.trip?.TripId;
+
+      // Auto-start GPS tracking
+      if (tripId && token) {
+        await startTracking({
+          tripId,
+          routeId,
+          driverId: Number(driverId),
+          token,
+        });
+      }
+
+      Alert.alert("Success", "Trip started with live GPS tracking!");
+      fetchActiveTrips();
+      fetchDrivers();
+      fetchBuses();
+    } catch (error: any) {
+      Alert.alert("Error", error?.message ?? "Failed to start trip.");
+    }
+  };
+
+  const handleEndTrip = async (tripId: number) => {
+    try {
+      if (!isAdmin) {
+        Alert.alert("Access denied", "Only admin can end trips.");
+        return;
+      }
+
+      Alert.alert(
+        "End Trip",
+        "This will force stop the live trip and GPS tracking. Continue?",
+        [
+          { text: "Cancel", style: "cancel" },
+          {
+            text: "End Trip",
+            style: "destructive",
+            onPress: async () => {
+              try {
+                const authHeaders = await getAuthHeaders();
+                const res = await fetch(`${API_BASE_URL}/api/trips/end`, {
+                  method: "POST",
+                  headers: {
+                    "Content-Type": "application/json",
+                    ...authHeaders,
+                  },
+                  body: JSON.stringify({ tripId }),
+                });
+
+                if (!res.ok) {
+                  throw new Error("Failed to end trip");
+                }
+
+                // Stop GPS tracking
+                stopTracking();
+
+                Alert.alert("Success", "Trip ended successfully");
+                fetchActiveTrips();
+                fetchDrivers();
+                fetchBuses();
+              } catch (err: any) {
+                Alert.alert("Error", err.message);
+              }
+            },
+          },
+        ],
+      );
+    } catch (error: any) {
+      Alert.alert("Error", error.message);
+    }
+  };
+
   const openEditBus = (bus: BusItem) => {
     setModalMode("edit");
     setEditingBus(bus);
     setBusForm({ busNumber: bus.number, model: bus.route });
+    // Fleet Management Fixes
+    // - [x] Route Management
+    //     - [x] Fix Route Deletion: Nullify assignments in Users table before deleting Route
+    //     - [x] Sync assignments in `routeController.ts`
+    // - [x] Driver Assignment Sync (Final Fix)
+    //     - [x] Refactor `driverController.ts` with explicit field mapping
+    //     - [x] Ensure Route and Bus names are correctly returned to frontend
+    //     - [x] Robust OrgId handling across all controllers
+    // - [x] Verification
+    //     - [x] Verify data flow via frontend-to-backend field mapping
+    //     - [x] Confirm display in driver list card
     setAddVisible(true);
   };
 
@@ -638,12 +814,12 @@ export default function Driver() {
     <SafeAreaView style={styles.container}>
       <View style={styles.header}>
         <View>
-          <Text style={styles.title}>Driver</Text>
-          <Text style={styles.subtitle}>Manage drivers and buses</Text>
+          <Text style={styles.title}>Driver Management</Text>
+          <Text style={styles.subtitle}>Manage drivers quickly</Text>
         </View>
         <TouchableOpacity style={styles.addButton} onPress={openAdd}>
           <Text style={styles.addButtonText}>
-            Add {activeTab === "drivers" ? "Driver" : "Bus"}
+            {activeTab === "drivers" ? "Add New Driver" : "Add Bus"}
           </Text>
         </TouchableOpacity>
       </View>
@@ -675,6 +851,19 @@ export default function Driver() {
             Buses
           </Text>
         </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.tab, activeTab === "trips" && styles.activeTab]}
+          onPress={() => setActiveTab("trips")}
+        >
+          <Text
+            style={[
+              styles.tabText,
+              activeTab === "trips" && styles.activeTabText,
+            ]}
+          >
+            Active Trips
+          </Text>
+        </TouchableOpacity>
       </View>
 
       {loadingDrivers || loadingBuses ? (
@@ -686,6 +875,24 @@ export default function Driver() {
           data={filteredDrivers}
           keyExtractor={(item) => item.id}
           contentContainerStyle={styles.listContent}
+          ListHeaderComponent={
+            <View style={styles.listHeaderWrapper}>
+              <View style={styles.searchBar}>
+                <Ionicons name="search" size={18} color="#94A3B8" />
+                <TextInput
+                  placeholder="Search driver"
+                  value={query}
+                  onChangeText={setQuery}
+                  style={styles.searchInput}
+                  placeholderTextColor="#94A3B8"
+                />
+              </View>
+              <View style={styles.listHeaderRow}>
+                <Text style={styles.listTitle}>Driver List</Text>
+                <Text style={styles.listCount}>{filteredDrivers.length}</Text>
+              </View>
+            </View>
+          }
           ListEmptyComponent={
             <Text style={styles.emptyText}>No drivers found.</Text>
           }
@@ -693,35 +900,48 @@ export default function Driver() {
             <View style={styles.card}>
               <View style={styles.cardContent}>
                 <View style={styles.avatar}>
-                  <Text style={styles.avatarText}>{getInitials(item.name)}</Text>
+                  <Text style={styles.avatarText}>
+                    {getInitials(item.name)}
+                  </Text>
                 </View>
                 <View style={styles.info}>
-                  <Text style={styles.name}>{item.name}</Text>
+                  <View style={styles.nameRow}>
+                    <Text style={styles.name}>{item.name}</Text>
+                  </View>
                   <Text style={styles.details}>{item.phone}</Text>
                   <View style={styles.assignmentDetails}>
                     {item.route ? (
-                      <View style={[styles.tag, { backgroundColor: '#f0f7ff' }]}>
+                      <View
+                        style={[styles.tag, { backgroundColor: "#f0f7ff" }]}
+                      >
                         <Ionicons name="map" size={12} color={PRIMARY_BLUE} />
                         <Text style={styles.tagText}>R: {item.route}</Text>
                       </View>
                     ) : (
-                      <View style={[styles.tag, { backgroundColor: '#f5f5f5' }]}>
+                      <View
+                        style={[styles.tag, { backgroundColor: "#f5f5f5" }]}
+                      >
                         <Ionicons name="map-outline" size={12} color="#999" />
                         <Text style={styles.tagText}>No Route Assigned</Text>
                       </View>
                     )}
                     {item.busNumber ? (
-                      <View style={[styles.tag, { backgroundColor: '#EFF6FF' }]}>
+                      <View
+                        style={[styles.tag, { backgroundColor: "#EFF6FF" }]}
+                      >
                         <Ionicons name="bus" size={12} color="#3B82F6" />
                         <Text style={styles.tagText}>B: {item.busNumber}</Text>
                       </View>
                     ) : (
-                      <View style={[styles.tag, { backgroundColor: '#f5f5f5' }]}>
+                      <View
+                        style={[styles.tag, { backgroundColor: "#f5f5f5" }]}
+                      >
                         <Ionicons name="bus-outline" size={12} color="#999" />
                         <Text style={styles.tagText}>No Bus Assigned</Text>
                       </View>
                     )}
                   </View>
+
                 </View>
               </View>
               {isAdmin && (
@@ -743,7 +963,7 @@ export default function Driver() {
             </View>
           )}
         />
-      ) : (
+      ) : activeTab === "buses" ? (
         <FlatList
           data={filteredBuses}
           keyExtractor={(item) => item.id}
@@ -755,13 +975,15 @@ export default function Driver() {
             <View style={styles.card}>
               <View style={styles.cardContent}>
                 <View style={styles.avatar}>
-                  <Text style={styles.avatarText}>{getInitials(item.number)}</Text>
+                  <Text style={styles.avatarText}>
+                    {getInitials(item.number)}
+                  </Text>
                 </View>
                 <View style={styles.info}>
                   <Text style={styles.name}>{item.number}</Text>
                   <Text style={styles.details}>Model: {item.route}</Text>
                   <View style={styles.assignmentDetails}>
-                    <View style={[styles.tag, { backgroundColor: '#f0fff4' }]}>
+                    <View style={[styles.tag, { backgroundColor: "#f0fff4" }]}>
                       <Ionicons name="person" size={12} color="#48BB78" />
                       <Text style={styles.tagText}>D: {item.driver}</Text>
                     </View>
@@ -787,6 +1009,136 @@ export default function Driver() {
             </View>
           )}
         />
+      ) : (
+        <FlatList
+          data={activeTrips}
+          keyExtractor={(item) => item.BusId.toString()}
+          contentContainerStyle={styles.listContent}
+          ListEmptyComponent={
+            <Text style={styles.emptyText}>No active trips at the moment.</Text>
+          }
+          renderItem={({ item }) => (
+            <View
+              style={[
+                styles.card,
+                { borderColor: "#4ade80", borderLeftWidth: 4 },
+              ]}
+            >
+              <View style={styles.cardContent}>
+                <View style={[styles.avatar, { backgroundColor: "#f0fdf4" }]}>
+                  <Ionicons name="navigate" size={24} color="#22c55e" />
+                </View>
+                <View style={styles.info}>
+                  <Text style={styles.name}>
+                    {item.BusNumber} · {item.ActiveTrip?.RouteName}
+                  </Text>
+                  <Text style={styles.details}>
+                    Driver: {item.ActiveTrip?.DriverName}
+                  </Text>
+                  <Text
+                    style={[
+                      styles.details,
+                      { fontSize: 11, color: "#999", marginTop: 2 },
+                    ]}
+                  >
+                    Started:{" "}
+                    {new Date(item.ActiveTrip?.StartTime).toLocaleTimeString(
+                      [],
+                      { hour: "2-digit", minute: "2-digit" },
+                    )}
+                  </Text>
+                </View>
+              </View>
+              <View
+                style={{
+                  flexDirection: "column",
+                  alignItems: "flex-end",
+                  gap: 6,
+                }}
+              >
+                {/* Track on Map button */}
+                <TouchableOpacity
+                  onPress={() => router.push("/map")}
+                  style={[
+                    styles.actionBtn,
+                    {
+                      backgroundColor: "#e0f2fe",
+                      borderRadius: 8,
+                      paddingHorizontal: 12,
+                      flexDirection: "row",
+                      alignItems: "center",
+                      gap: 4,
+                    },
+                  ]}
+                >
+                  <Ionicons name="location" size={14} color="#0284c7" />
+                  <Text
+                    style={{
+                      color: "#0284c7",
+                      fontWeight: "700",
+                      fontSize: 12,
+                    }}
+                  >
+                    TRACK
+                  </Text>
+                </TouchableOpacity>
+
+                {isAdmin && (
+                  <TouchableOpacity
+                    onPress={() => handleEndTrip(item.ActiveTrip.TripId)}
+                    style={[
+                      styles.actionBtn,
+                      {
+                        backgroundColor: "#fee2e2",
+                        borderRadius: 8,
+                        paddingHorizontal: 12,
+                      },
+                    ]}
+                  >
+                    <Text
+                      style={{
+                        color: "#ef4444",
+                        fontWeight: "700",
+                        fontSize: 12,
+                      }}
+                    >
+                      END
+                    </Text>
+                  </TouchableOpacity>
+                )}
+
+                {/* GPS tracking indicator for driver */}
+                {isTracking && (
+                  <View
+                    style={{
+                      flexDirection: "row",
+                      alignItems: "center",
+                      gap: 4,
+                    }}
+                  >
+                    <View
+                      style={{
+                        width: 8,
+                        height: 8,
+                        borderRadius: 4,
+                        backgroundColor: "#22c55e",
+                      }}
+                    />
+                    <Text
+                      style={{
+                        fontSize: 10,
+                        color: "#22c55e",
+                        fontWeight: "600",
+                      }}
+                    >
+                      GPS Active
+                    </Text>
+                  </View>
+                )}
+              </View>
+            </View>
+          )}
+        />
       )}
 
       {/* Add/Edit Modal */}
@@ -799,7 +1151,8 @@ export default function Driver() {
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
             <Text style={styles.modalTitle}>
-              {modalMode === "edit" ? "Edit" : "Add New"} {activeTab === "drivers" ? "Driver" : "Bus"}
+              {modalMode === "edit" ? "Edit" : "Add New"}{" "}
+              {activeTab === "drivers" ? "Driver" : "Bus"}
             </Text>
 
             {activeTab === "drivers" ? (
@@ -809,15 +1162,22 @@ export default function Driver() {
                   placeholder="Ex: John Doe"
                   style={styles.input}
                   value={driverForm.name}
-                  onChangeText={(v) => setDriverForm((p) => ({ ...p, name: v }))}
+                  onChangeText={(v) =>
+                    setDriverForm((p) => ({ ...p, name: v }))
+                  }
                 />
 
                 <Text style={styles.label}>Email Address</Text>
                 <TextInput
                   placeholder="Ex: driver@example.com"
-                  style={[styles.input, modalMode === "edit" && styles.disabledInput]}
+                  style={[
+                    styles.input,
+                    modalMode === "edit" && styles.disabledInput,
+                  ]}
                   value={driverForm.email}
-                  onChangeText={(v) => setDriverForm((p) => ({ ...p, email: v }))}
+                  onChangeText={(v) =>
+                    setDriverForm((p) => ({ ...p, email: v }))
+                  }
                   keyboardType="email-address"
                   autoCapitalize="none"
                   editable={modalMode !== "edit"}
@@ -828,18 +1188,24 @@ export default function Driver() {
                   placeholder="Ex: +977 9800000000"
                   style={styles.input}
                   value={driverForm.phone}
-                  onChangeText={(v) => setDriverForm((p) => ({ ...p, phone: v }))}
+                  onChangeText={(v) =>
+                    setDriverForm((p) => ({ ...p, phone: v }))
+                  }
                   keyboardType="phone-pad"
                 />
 
                 <Text style={styles.label}>
-                  {modalMode === "edit" ? "New Password (optional)" : "Password"}
+                  {modalMode === "edit"
+                    ? "New Password (optional)"
+                    : "Password"}
                 </Text>
                 <TextInput
                   placeholder="Password"
                   style={styles.input}
                   value={driverForm.password}
-                  onChangeText={(v) => setDriverForm((p) => ({ ...p, password: v }))}
+                  onChangeText={(v) =>
+                    setDriverForm((p) => ({ ...p, password: v }))
+                  }
                   secureTextEntry
                 />
 
@@ -852,18 +1218,36 @@ export default function Driver() {
                         "Select Route",
                         "Choose a primary route for this driver",
                         [
-                          { text: "None", onPress: () => setDriverForm({ ...driverForm, routeId: "" }) },
-                          ...routes.map(r => ({
+                          {
+                            text: "None",
+                            onPress: () =>
+                              setDriverForm({ ...driverForm, routeId: "" }),
+                          },
+                          ...routes.map((r) => ({
                             text: r.name,
-                            onPress: () => setDriverForm({ ...driverForm, routeId: r.id.toString() })
+                            onPress: () =>
+                              setDriverForm({
+                                ...driverForm,
+                                routeId: r.id.toString(),
+                              }),
                           })),
-                          { text: "Cancel", style: "cancel" }
-                        ]
+                          { text: "Cancel", style: "cancel" },
+                        ],
                       );
                     }}
                   >
-                    <Text style={driverForm.routeId ? styles.pickerText : styles.pickerPlaceholder}>
-                      {driverForm.routeId ? routes.find(r => r.id.toString() === driverForm.routeId)?.name : "Select Route"}
+                    <Text
+                      style={
+                        driverForm.routeId
+                          ? styles.pickerText
+                          : styles.pickerPlaceholder
+                      }
+                    >
+                      {driverForm.routeId
+                        ? routes.find(
+                          (r) => r.id.toString() === driverForm.routeId,
+                        )?.name
+                        : "Select Route"}
                     </Text>
                     <Ionicons name="chevron-down" size={20} color="#999" />
                   </TouchableOpacity>
@@ -878,18 +1262,36 @@ export default function Driver() {
                         "Select Bus",
                         "Choose a primary bus for this driver",
                         [
-                          { text: "None", onPress: () => setDriverForm({ ...driverForm, busId: "" }) },
-                          ...buses.map(b => ({
+                          {
+                            text: "None",
+                            onPress: () =>
+                              setDriverForm({ ...driverForm, busId: "" }),
+                          },
+                          ...buses.map((b) => ({
                             text: b.number,
-                            onPress: () => setDriverForm({ ...driverForm, busId: b.id.toString() })
+                            onPress: () =>
+                              setDriverForm({
+                                ...driverForm,
+                                busId: b.id.toString(),
+                              }),
                           })),
-                          { text: "Cancel", style: "cancel" }
-                        ]
+                          { text: "Cancel", style: "cancel" },
+                        ],
                       );
                     }}
                   >
-                    <Text style={driverForm.busId ? styles.pickerText : styles.pickerPlaceholder}>
-                      {driverForm.busId ? buses.find(b => b.id.toString() === driverForm.busId)?.number : "Select Bus"}
+                    <Text
+                      style={
+                        driverForm.busId
+                          ? styles.pickerText
+                          : styles.pickerPlaceholder
+                      }
+                    >
+                      {driverForm.busId
+                        ? buses.find(
+                          (b) => b.id.toString() === driverForm.busId,
+                        )?.number
+                        : "Select Bus"}
                     </Text>
                     <Ionicons name="chevron-down" size={20} color="#999" />
                   </TouchableOpacity>
@@ -901,7 +1303,9 @@ export default function Driver() {
                   </TouchableOpacity>
                   <TouchableOpacity
                     style={styles.saveBtn}
-                    onPress={modalMode === "edit" ? handleEditDriver : handleAddDriver}
+                    onPress={
+                      modalMode === "edit" ? handleEditDriver : handleAddDriver
+                    }
                   >
                     <Text style={styles.saveText}>
                       {modalMode === "edit" ? "Update Driver" : "Create Driver"}
@@ -912,7 +1316,9 @@ export default function Driver() {
             ) : (
               <ScrollView showsVerticalScrollIndicator={false}>
                 {!isAdmin && (
-                  <Text style={styles.warningText}>Only admin can manage buses.</Text>
+                  <Text style={styles.warningText}>
+                    Only admin can manage buses.
+                  </Text>
                 )}
 
                 <Text style={styles.label}>Bus Number</Text>
@@ -920,7 +1326,9 @@ export default function Driver() {
                   placeholder="Ex: BAPA-1234"
                   style={styles.input}
                   value={busForm.busNumber}
-                  onChangeText={(v) => setBusForm((p) => ({ ...p, busNumber: v }))}
+                  onChangeText={(v) =>
+                    setBusForm((p) => ({ ...p, busNumber: v }))
+                  }
                 />
 
                 <Text style={styles.label}>Model / Details</Text>
@@ -937,7 +1345,9 @@ export default function Driver() {
                   </TouchableOpacity>
                   <TouchableOpacity
                     style={[styles.saveBtn, !isAdmin && { opacity: 0.6 }]}
-                    onPress={modalMode === "edit" ? handleEditBus : handleAddBus}
+                    onPress={
+                      modalMode === "edit" ? handleEditBus : handleAddBus
+                    }
                     disabled={!isAdmin}
                   >
                     <Text style={styles.saveText}>
@@ -1018,6 +1428,45 @@ const styles = StyleSheet.create({
     paddingTop: 16,
     paddingBottom: 16,
   },
+  listHeaderWrapper: {
+    marginBottom: 12,
+    gap: 10,
+  },
+  searchBar: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    backgroundColor: "#fff",
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+  },
+  searchInput: {
+    flex: 1,
+    fontSize: 14,
+    color: "#0F172A",
+  },
+  listHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  listTitle: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: "#0F172A",
+  },
+  listCount: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#1D4ED8",
+    backgroundColor: "#DBEAFE",
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 999,
+  },
   card: {
     backgroundColor: "#fff",
     borderRadius: 12,
@@ -1025,7 +1474,7 @@ const styles = StyleSheet.create({
     marginBottom: 10,
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: 'space-between',
+    justifyContent: "space-between",
     shadowColor: "#000",
     shadowOffset: { width: 0, height: 1 },
     shadowOpacity: 0.05,
@@ -1033,9 +1482,9 @@ const styles = StyleSheet.create({
     elevation: 2,
   },
   cardContent: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    flex: 1
+    flexDirection: "row",
+    alignItems: "center",
+    flex: 1,
   },
   avatar: {
     width: 44,
@@ -1059,26 +1508,63 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     color: "#333",
   },
+  nameRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+  },
   details: {
     fontSize: 13,
     color: "#666",
   },
+  statusPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 999,
+  },
+  statusActive: {
+    backgroundColor: "#ECFDF3",
+  },
+  statusLeave: {
+    backgroundColor: "#FFF7ED",
+  },
+  statusDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+  },
+  statusDotActive: {
+    backgroundColor: "#22C55E",
+  },
+  statusDotLeave: {
+    backgroundColor: "#F97316",
+  },
+  statusText: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: "#0F172A",
+  },
   actions: {
-    flexDirection: 'row',
-    gap: 12
+    flexDirection: "row",
+    gap: 12,
   },
   actionBtn: {
-    padding: 8
+    padding: 8,
   },
   assignmentDetails: {
-    flexDirection: 'row',
+    flexDirection: "row",
     gap: 8,
     marginTop: 4,
-    flexWrap: 'wrap'
+    flexWrap: "wrap",
   },
+
   tag: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: "row",
+    alignItems: "center",
     paddingHorizontal: 8,
     paddingVertical: 2,
     borderRadius: 99,
@@ -1086,8 +1572,8 @@ const styles = StyleSheet.create({
   },
   tagText: {
     fontSize: 11,
-    color: '#333',
-    fontWeight: '500'
+    color: "#333",
+    fontWeight: "500",
   },
   loadingContainer: {
     flex: 1,
@@ -1110,7 +1596,7 @@ const styles = StyleSheet.create({
     borderRadius: 15,
     padding: 20,
     elevation: 5,
-    maxHeight: '90%',
+    maxHeight: "90%",
   },
   modalTitle: {
     fontSize: 20,
@@ -1158,7 +1644,7 @@ const styles = StyleSheet.create({
     padding: 12,
     borderRadius: 10,
     backgroundColor: PRIMARY_BLUE,
-    alignItems: 'center',
+    alignItems: "center",
   },
   cancelText: {
     color: "#666",
@@ -1173,21 +1659,21 @@ const styles = StyleSheet.create({
     borderColor: "#ddd",
     borderRadius: 10,
     backgroundColor: "#f9f9f9",
-    overflow: 'hidden'
+    overflow: "hidden",
   },
   pickerTrigger: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
     padding: 12,
   },
   pickerText: {
     fontSize: 16,
-    color: '#333'
+    color: "#333",
   },
   pickerPlaceholder: {
     fontSize: 16,
-    color: '#999'
+    color: "#999",
   },
   warningText: {
     color: "#ff4f4f",
