@@ -2,16 +2,20 @@ import cors from "cors"; // Triggering restart
 import "dotenv/config";
 import type { Request, Response } from "express";
 import express from "express";
+import path from "path";
+import { fileURLToPath } from "url";
 import { createServer } from "http";
 import { Server } from "socket.io";
 import prisma from "./model/index.js";
 import busRoutes from "./routes/busRoutes.js";
 import driverRoutes from "./routes/driverRoutes.js";
 import paymentRoutes from "./routes/paymentRoutes.js";
+import reportRoutes from "./routes/reportRoutes.js";
 import routeRoutes from "./routes/routeRoutes.js";
 import tripRoutes from "./routes/tripRoutes.js";
 import userRoutes from "./routes/userRoutes.js";
-import { info, warn } from './utils/logger.js';
+
+import { info, warn, error } from './utils/logger.js';
 
 const app = express();
 const httpServer = createServer(app);
@@ -33,6 +37,12 @@ app.use(
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// Serve static uploads
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+app.use("/uploads", express.static(path.join(__dirname, "../uploads")));
+
+
 // Socket.IO logic
 io.on("connection", (socket: any) => {
   info("Client connected:", socket.id);
@@ -41,6 +51,12 @@ io.on("connection", (socket: any) => {
     socket.join(`route-${routeId}`);
     info(`User ${socket.id} joined route-${routeId}`);
   });
+
+  socket.on("join-user", (userId: any) => {
+    socket.join(`user-${userId}`);
+    info(`User ${socket.id} joined user-${userId}`);
+  });
+
 
   // Driver sends GPS location updates — persist to DB AND broadcast
   socket.on("update-location", async (data: { tripId: number; routeId: number; latitude: number; longitude: number; driverId: number }) => {
@@ -70,6 +86,11 @@ io.on("connection", (socket: any) => {
     });
   });
 
+  socket.on("delete-notification", (data: { notificationId: number }) => {
+    io.emit("notificationDeleted", data);
+  });
+
+
   socket.on("disconnect", () => {
     info("Client disconnected:", socket.id);
   });
@@ -89,6 +110,19 @@ app.use("/api/buses", busRoutes);
 app.use("/api/drivers", driverRoutes);
 app.use("/api/trips", tripRoutes);
 app.use("/api/payments", paymentRoutes);
+app.use("/api/reports", reportRoutes);
+
+// Global Error Handler
+app.use((err: any, req: Request, res: Response, next: any) => {
+  error("Unhandle Error:", err);
+  const status = err.status || 500;
+  const message = err.message || "Internal Server Error";
+  
+  res.status(status).json({
+    message,
+    error: process.env.NODE_ENV === "development" ? err : {},
+  });
+});
 
 const PORT = process.env.PORT || 3000;
 

@@ -224,35 +224,53 @@ export const listBuses = async (req: Request, res: Response) => {
       where,
       orderBy: { BusNumber: 'asc' },
       include: {
+        assignedUsers: {
+          where: { Role: 'driver' },
+          select: { Name: true, Phone: true },
+        },
         routeAssignments: {
+          where: { Status: 'active' },
           include: {
             route: {
-              include: {
-                driverAssignments: {
-                  include: {
-                    driver: true,
-                  },
-                },
-              },
+              select: { Name: true },
             },
+          },
+        },
+        trips: {
+          where: { Status: 'active' },
+          include: {
+            route: { select: { Name: true } },
+            driver: { select: { Name: true, Phone: true } },
           },
         },
       },
     });
 
     const mappedBuses = buses.map((bus) => {
-      // Find the first driver from any assigned route
-      let driverName = '';
-      if (bus.routeAssignments && bus.routeAssignments.length > 0) {
-        const firstAssignment = bus.routeAssignments[0];
-        if ((firstAssignment?.route?.driverAssignments?.length ?? 0) > 0) {
-          driverName = firstAssignment?.route?.driverAssignments[0]?.driver?.Name ?? '';
-        }
-      }
+      // 1. Determine driver info (prefer live trip driver, fallback to assigned driver)
+      const activeTrip = bus.trips[0] || null;
+      let driverName = activeTrip?.driver?.Name || bus.assignedUsers[0]?.Name || 'Unassigned';
+      let driverPhone = activeTrip?.driver?.Phone || bus.assignedUsers[0]?.Phone || '';
+
+      // 2. Determine route name (prefer live trip route, fallback to assigned route)
+      let routeName = activeTrip?.route?.Name || bus.routeAssignments[0]?.route?.Name || 'No Route';
 
       return {
-        ...bus,
+        BusId: bus.BusId,
+        BusNumber: bus.BusNumber,
+        Model: bus.Model,
+        Status: activeTrip ? 'active' : 'idle',
         DriverName: driverName,
+        DriverPhone: driverPhone,
+        RouteName: routeName,
+        ActiveTrip: activeTrip ? {
+          TripId: activeTrip.TripId,
+          RouteId: activeTrip.RouteId,
+          RouteName: activeTrip.route.Name,
+          StartTime: activeTrip.StartTime,
+          DriverName: activeTrip.driver.Name,
+          DriverPhone: activeTrip.driver.Phone,
+        } : null,
       };
     });
 

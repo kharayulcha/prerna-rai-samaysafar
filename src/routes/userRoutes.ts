@@ -1,5 +1,7 @@
 import express from 'express';
 import multer from 'multer';
+import path from 'path';
+
 import {
     createUser,
     deleteNotification,
@@ -8,6 +10,7 @@ import {
     editUser,
     forgotPassword,
     getNotifications,
+    getProfile,
     listUsers,
     login,
     markNotificationRead,
@@ -21,8 +24,19 @@ import catchAsync from '../utils/catchAsync.js';
 
 const router = express.Router();
 
-// Multer setup for organization logo upload (stored in memory, not as URL)
-const upload = multer({ storage: multer.memoryStorage() });
+// Multer setup for disk storage
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, 'uploads/');
+  },
+  filename: (req, file, cb) => {
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    cb(null, file.fieldname + '-' + uniqueSuffix + path.extname(file.originalname));
+  },
+});
+
+const upload = multer({ storage: storage });
+
 
 // Organization registration routes
 // Expect multipart/form-data with fields: name, email, phone, password, address and file: logo
@@ -45,6 +59,7 @@ router.post('/reset-password', catchAsync(resetPassword)); // US-5
 
 // Edit profile route (authenticated user) - accepts multipart/form-data with optional file: profileImage
 router.put('/edit-profile', upload.single('profileImage'), catchAsync(editProfile)); // US-6
+router.get('/profile', catchAsync(getProfile));
 // Admin User Management
 router.put('/:id', catchAsync(editUser));
 router.delete('/:id', catchAsync(deleteUser));

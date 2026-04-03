@@ -51,14 +51,10 @@ export const registerOrganization = async (req: Request, res: Response) => {
 
     const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
 
-    // Process logo if provided - Logo is Bytes? in DB
-    let logoBuffer: Buffer | null = null;
-    if (file && file.buffer) {
-      logoBuffer = file.buffer;
-      if (logoBuffer) {
-        info('[Register] Logo file received, size:', logoBuffer.length, 'bytes');
-      }
-    }
+    // Process logo if provided - Logo is String? (path) in DB
+    const logoPath = file ? file.filename : null;
+    if (logoPath) info('[Register] Logo file saved:', logoPath);
+
 
     const otp = generateOTP();
     const expiresAt = new Date(Date.now() + OTP_EXPIRY_MINUTES * 60000);
@@ -73,7 +69,7 @@ export const registerOrganization = async (req: Request, res: Response) => {
         Phone: phone,
         PasswordHash: passwordHash,
         Address: address,
-        Logo: logoBuffer ? new Uint8Array(logoBuffer) : null,
+        Logo: logoPath,
         OTP: otp,
         OTPExpiresAt: expiresAt,
       },
@@ -83,12 +79,13 @@ export const registerOrganization = async (req: Request, res: Response) => {
         Phone: phone,
         PasswordHash: passwordHash,
         Address: address,
-        Logo: logoBuffer ? new Uint8Array(logoBuffer) : null,
+        Logo: logoPath,
         OTP: otp,
         OTPExpiresAt: expiresAt,
       }
     });
-    info('[Register] Pending admin created/updated with logo:', logoBuffer ? `${logoBuffer.length} bytes` : 'null');
+    info('[Register] Pending admin created/updated with logo:', logoPath);
+
 
     await sendOTPEmail(normalizedEmail, otp, name);
     return res.status(200).json({ message: 'Registration successful. Verify OTP sent to email.' });
@@ -138,23 +135,17 @@ export const verifyOrganizationOTP = async (req: Request, res: Response) => {
 
     // Transaction to create Org and Admin User
     await prisma.$transaction(async (tx) => {
-      info('[OTP Verify] Creating organization with logo:', pending.Logo ? `${Buffer.from(pending.Logo).length} bytes` : 'null');
+      info('[OTP Verify] Creating organization with logo:', pending.Logo || 'null');
       const org = await tx.organization.create({
         data: {
           Name: pending.Name,
           Email: pending.Email,
           Phone: pending.Phone,
           Address: pending.Address || '',
-          Logo: pending.Logo ? new Uint8Array(pending.Logo) : null,
+          Logo: pending.Logo,
         }
       });
       info('[OTP Verify] Organization created:', org.OrgId);
-
-      // ProfileImage in Users is String?
-      // If we have logo bytes, we can convert to base64 data URL for User profile image string
-      const profileImageStr = pending.Logo
-        ? `data:image/png;base64,${Buffer.from(pending.Logo).toString('base64')}`
-        : null;
 
       // Create Admin User
       const admin = await tx.users.create({
@@ -164,9 +155,10 @@ export const verifyOrganizationOTP = async (req: Request, res: Response) => {
           Name: pending.Name,
           Email: pending.Email,
           Phone: pending.Phone,
-          ProfileImage: profileImageStr
+          ProfileImage: pending.Logo
         }
       });
+
 
       // Create Credentials
       await tx.credentials.create({
@@ -215,120 +207,175 @@ export const resendOrganizationOTP = async (req: Request, res: Response) => {
   }
 };
 
-export const login = async (req: Request, res: Response) => {
-  const { email, password } = req.body;
-  try {
-    const user = await prisma.users.findUnique({
-      where: { Email: email },
-      include: {
-        organization: { select: { OrgId: true, Name: true, Email: true, Phone: true, Address: true, Logo: true } },
-        parent: { select: { Name: true } },
-        assignedRoute: {
-          include: {
-            driverAssignments: {
-              where: { Status: 'active' },
-              include: { driver: { select: { Name: true, Phone: true } } }
-            },
-            busAssignments: {
-              where: { Status: 'active' },
-              include: { bus: { select: { BusNumber: true, BusId: true } } }
-            }
+// Helper to fetch full user data structure used by login and getProfile
+async function getUserFullData(email: string) {
+  // Use findFirst with insensitive mode to gracefully handle case mismatches
+  return await prisma.users.findFirst({
+    where: { Email: { equals: email, mode: 'insensitive' } },
+
+    include: {
+      organization: { select: { OrgId: true, Name: true, Email: true, Phone: true, Address: true, Logo: true } },
+      parent: { select: { Name: true } },
+      assignedBus: { select: { BusId: true, BusNumber: true } },
+      assignedRoute: {
+        include: {
+          driverAssignments: {
+            where: { Status: 'active' },
+            include: { driver: { select: { Name: true, Phone: true, assignedBus: { select: { BusId: true, BusNumber: true } } } } }
+          },
+          busAssignments: {
+            where: { Status: 'active' },
+            include: { bus: { select: { BusNumber: true, BusId: true } } }
           }
-        },
-        driverRoutes: {
-          where: { Status: 'active' },
-          include: {
-            route: {
-              include: {
-                busAssignments: {
-                  where: { Status: 'active' },
-                  include: { bus: { select: { BusNumber: true } } }
-                }
-              }
-            }
-          }
-        },
-        children: {
-          include: {
-            assignedBus: { select: { BusNumber: true } },
-            assignedRoute: {
-              include: {
-                driverAssignments: {
-                  where: { Status: 'active' },
-                  include: { driver: { select: { Name: true, Phone: true } } }
-                },
-                busAssignments: {
-                  where: { Status: 'active' },
-                  include: { bus: { select: { BusNumber: true, BusId: true } } }
-                }
+        }
+      },
+      driverRoutes: {
+        where: { Status: 'active' },
+        include: {
+          route: {
+            include: {
+              busAssignments: {
+                where: { Status: 'active' },
+                include: { bus: { select: { BusNumber: true } } }
               }
             }
           }
         }
-      }
-    });
-    if (!user) return res.status(401).json({ message: 'Invalid credentials' });
-
-    const creds = await prisma.credentials.findUnique({ where: { UserId: user.UserId } });
-    if (!creds) return res.status(401).json({ message: 'Invalid credentials' });
-
-    const valid = await bcrypt.compare(password, creds.PasswordHash);
-    if (!valid) return res.status(401).json({ message: 'Invalid credentials' });
-
-    // Extract route info for drivers if not directly assigned
-    let routeId = user.RouteId;
-    let busId = user.BusId || (user as any).assignedRoute?.busAssignments[0]?.BusId || (user as any).assignedRoute?.driverAssignments[0]?.driver?.assignedBus?.BusId || null;
-    let routeName = (user as any).assignedRoute?.Name || null;
-    let busNumber = (user as any).assignedRoute?.busAssignments[0]?.bus?.BusNumber || (user as any).assignedRoute?.driverAssignments[0]?.driver?.assignedBus?.BusNumber || (user as any).assignedBus?.BusNumber || null;
-
-    if (user.Role?.toLowerCase() === 'driver' && (!routeId || !busId) && user.driverRoutes.length > 0) {
-      const primaryAssignment = user.driverRoutes[0];
-      if (primaryAssignment) {
-        if (!routeId) {
-          routeId = primaryAssignment.RouteId;
-          routeName = primaryAssignment.route.Name;
-        }
-        if (!busId) {
-          busId = primaryAssignment.route.busAssignments[0]?.BusId || null;
-          if (!busNumber) {
-            busNumber = primaryAssignment.route.busAssignments[0]?.bus?.BusNumber || (user as any).assignedBus?.BusNumber || null;
+      },
+      children: {
+        include: {
+          assignedBus: { select: { BusNumber: true } },
+          assignedRoute: {
+            include: {
+              driverAssignments: {
+                where: { Status: 'active' },
+                include: { driver: { select: { Name: true, Phone: true, assignedBus: { select: { BusId: true, BusNumber: true } } } } }
+              },
+              busAssignments: {
+                where: { Status: 'active' },
+                include: { bus: { select: { BusNumber: true, BusId: true } } }
+              }
+            }
           }
         }
       }
     }
+  });
+}
 
-    const isDriver = String(user.Role || '').toLowerCase() === 'driver';
-    const derivedRouteId = isDriver
-      ? user.RouteId ?? user.driverRoutes?.[0]?.RouteId ?? null
-      : user.RouteId ?? null;
-    const derivedBusId = isDriver
-      ? user.BusId ?? (user as any).assignedRoute?.busAssignments[0]?.bus?.BusId ?? null
-      : user.BusId ?? null;
+function formatUserForResponse(user: any) {
+  // Helper for image URLs
+  const getImageUrl = (filename: any) => {
+    if (!filename || typeof filename !== 'string') return null;
+    if (filename.startsWith('http') || filename.startsWith('data:')) return filename;
+    const baseUrl = process.env.BACKEND_URL || 'http://localhost:8000';
+    return `${baseUrl}/uploads/${filename}`;
+  };
+
+
+  // Extract route info for drivers if not directly assigned
+  let routeId = user.RouteId;
+  let busId = user.BusId || user.assignedRoute?.busAssignments[0]?.BusId || user.assignedRoute?.driverAssignments[0]?.driver?.assignedBus?.BusId || null;
+  let routeName = user.assignedRoute?.Name || null;
+  let busNumber = user.assignedRoute?.busAssignments[0]?.bus?.BusNumber || user.assignedRoute?.driverAssignments[0]?.driver?.assignedBus?.BusNumber || user.assignedBus?.BusNumber || null;
+
+  if (user.Role?.toLowerCase() === 'driver' && (!routeId || !busId) && user.driverRoutes.length > 0) {
+    const primaryAssignment = user.driverRoutes[0];
+    if (primaryAssignment) {
+      if (!routeId) {
+        routeId = primaryAssignment.RouteId;
+        routeName = primaryAssignment.route.Name;
+      }
+      if (!busId) {
+        busId = primaryAssignment.route.busAssignments[0]?.BusId || null;
+        if (!busNumber) {
+          busNumber = primaryAssignment.route.busAssignments[0]?.bus?.BusNumber || user.assignedBus?.BusNumber || null;
+        }
+      }
+    }
+  }
+
+  return {
+    id: user.UserId,
+    name: user.Name,
+    role: user.Role,
+    orgId: user.OrgId,
+    email: user.Email,
+    phone: user.Phone,
+    address: user.organization?.Address || '',
+    routeId: routeId,
+    busId: busId,
+    profileImage: getImageUrl(user.ProfileImage),
+    parentName: user.parent?.Name || null,
+    routeName: routeName,
+    driverName: user.assignedRoute?.driverAssignments[0]?.driver?.Name || null,
+    driverPhone: user.assignedRoute?.driverAssignments[0]?.driver?.Phone || null,
+    busNumber: busNumber,
+    children: user.children.map((c: any) => ({
+      name: c.Name,
+      routeId: c.RouteId || null,
+      routeName: c.assignedRoute?.Name || null,
+      driverName: c.assignedRoute?.driverAssignments[0]?.driver?.Name || null,
+      driverPhone: c.assignedRoute?.driverAssignments[0]?.driver?.Phone || null,
+      busNumber: c.assignedRoute?.busAssignments[0]?.bus?.BusNumber || c.assignedRoute?.driverAssignments[0]?.driver?.assignedBus?.BusNumber || c.assignedBus?.BusNumber || null,
+    })),
+    organization: user.organization ? {
+      name: user.organization.Name,
+      logo: getImageUrl(user.organization.Logo),
+      address: user.organization.Address
+    } : null
+  };
+}
+
+
+export const login = async (req: Request, res: Response) => {
+  const { email, password } = req.body;
+  try {
+    // Normalize email for case-insensitive matching
+    const normalizedEmail = email.toLowerCase().trim();
+    info(`[Login] Attempting login for: ${normalizedEmail}`);
+    
+    const user = await getUserFullData(normalizedEmail);
+
+
+    if (!user) {
+      info(`[Login] No user found with email: ${normalizedEmail}`);
+      return res.status(401).json({ message: 'Invalid credentials' });
+    }
+
+    const creds = await prisma.credentials.findUnique({ where: { UserId: user.UserId } });
+    if (!creds) {
+      info(`[Login] No credentials found for user ID: ${user.UserId}`);
+      return res.status(401).json({ message: 'Invalid credentials' });
+    }
+
+    const valid = await bcrypt.compare(password, creds.PasswordHash);
+    if (!valid) {
+      info(`[Login] Password mismatch for: ${normalizedEmail}`);
+      return res.status(401).json({ message: 'Invalid credentials' });
+    }
+
+    info(`[Login] Success for: ${normalizedEmail}`);
+    const userForResponse = formatUserForResponse(user);
+
 
     const token = jwt.sign(
       {
-        userId: user.UserId,
-        orgId: user.OrgId,
-        role: user.Role,
-        email: user.Email,
-        name: user.Name,
-        phone: user.Phone,
-        address: user.organization?.Address || '',
-        routeId: user.RouteId,
-        busId: user.BusId,
-        parentName: (user as any).parent?.Name || null,
-        routeName: routeName,
-        driverName: (user as any).assignedRoute?.driverAssignments[0]?.driver?.Name || null,
-        driverPhone: (user as any).assignedRoute?.driverAssignments[0]?.driver?.Phone || null,
-        busNumber: (user as any).assignedRoute?.busAssignments[0]?.bus?.BusNumber || null,
-        children: user.children.map(c => ({
-          name: c.Name,
-          routeId: c.RouteId || null,
-          routeName: (c as any).assignedRoute?.Name || null,
-          driverName: (c as any).assignedRoute?.driverAssignments[0]?.driver?.Name || null,
-          driverPhone: (c as any).assignedRoute?.driverAssignments[0]?.driver?.Phone || null,
-          busNumber: (c as any).assignedRoute?.busAssignments[0]?.bus?.BusNumber || null,
-        }))
+        userId: userForResponse.id,
+        orgId: userForResponse.orgId,
+        role: userForResponse.role,
+        email: userForResponse.email,
+        name: userForResponse.name,
+        phone: userForResponse.phone,
+        address: userForResponse.address,
+        routeId: userForResponse.routeId,
+        busId: userForResponse.busId,
+        parentName: userForResponse.parentName,
+        routeName: userForResponse.routeName,
+        driverName: userForResponse.driverName,
+        driverPhone: userForResponse.driverPhone,
+        busNumber: userForResponse.busNumber,
+        children: userForResponse.children
       },
       JWT_SECRET as string,
       { expiresIn: '30d' }
@@ -337,63 +384,33 @@ export const login = async (req: Request, res: Response) => {
     return res.status(200).json({
       message: 'Login successful',
       token,
-      user: {
-        id: user.UserId,
-        name: user.Name,
-        role: user.Role,
-        orgId: user.OrgId,
-        email: user.Email,
-        phone: user.Phone,
-        address: user.organization?.Address || '',
-        routeId: user.RouteId,
-        busId: user.BusId,
-        profileImage: user.ProfileImage,
-        parentName: (user as any).parent?.Name || null,
-        routeName: routeName,
-        driverName: (user as any).assignedRoute?.driverAssignments[0]?.driver?.Name || null,
-        driverPhone: (user as any).assignedRoute?.driverAssignments[0]?.driver?.Phone || null,
-        busNumber: (user as any).assignedRoute?.busAssignments[0]?.bus?.BusNumber || null,
-        children: user.children.map(c => ({
-          name: c.Name,
-          routeId: c.RouteId || null,
-          routeName: (c as any).assignedRoute?.Name || null,
-          driverName: (c as any).assignedRoute?.driverAssignments[0]?.driver?.Name || null,
-          driverPhone: (c as any).assignedRoute?.driverAssignments[0]?.driver?.Phone || null,
-          busNumber: (c as any).assignedRoute?.busAssignments[0]?.bus?.BusNumber || null,
-        })),
-        organization: user.organization ? {
-          name: user.organization.Name,
-          logo: user.organization.Logo ? (() => {
-            try {
-              info('[Login] Organization logo found, type:', typeof user.organization.Logo, 'is Buffer:', Buffer.isBuffer(user.organization.Logo));
-              // Handle both Buffer and Uint8Array
-              let logoBuffer: Buffer;
-              if (Buffer.isBuffer(user.organization.Logo)) {
-                logoBuffer = user.organization.Logo;
-              } else if (user.organization.Logo instanceof Uint8Array) {
-                logoBuffer = Buffer.from(user.organization.Logo);
-              } else if (typeof user.organization.Logo === 'object') {
-                // Handle object format from Prisma
-                logoBuffer = Buffer.from(Object.values(user.organization.Logo as any));
-              } else {
-                throw new Error('Unknown logo format');
-              }
-              const base64Logo = logoBuffer.toString('base64');
-              info('[Login] Logo converted to base64, length:', base64Logo.length);
-              return `data:image/png;base64,${base64Logo}`;
-            } catch (err) {
-              logError('[Login] Error converting logo to base64:', err);
-              return null;
-            }
-          })() : (() => { info('[Login] Organization logo is null'); return null; })(),
-          address: user.organization.Address
-        } : null
-      }
+      user: userForResponse
     });
 
   } catch (err: any) {
     logError(err);
     return res.status(500).json({ message: 'Error logging in', error: err.message });
+  }
+};
+
+export const getProfile = async (req: Request, res: Response) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ message: 'No token' });
+    }
+    const token = authHeader.split(' ')[1];
+    const payload: any = jwt.verify(token as string, JWT_SECRET as string);
+
+    const user = await getUserFullData(payload.email);
+    if (!user) return res.status(404).json({ message: 'User not found' });
+
+    const userForResponse = formatUserForResponse(user);
+    return res.status(200).json({ user: userForResponse });
+
+  } catch (err: any) {
+    logError('[getProfile]', err);
+    return res.status(500).json({ message: 'Error fetching profile', error: err.message });
   }
 };
 // code for creating user and assigning parents 
@@ -410,8 +427,10 @@ export const createUser = async (req: Request, res: Response) => {
     if (!orgId) return res.status(400).json({ message: 'Invalid organization in token' });
 
     const { name, email, phone, role, password, parentId, routeId } = req.body as any;
+    const normalizedEmail = email.toLowerCase().trim();
 
-    const existing = await prisma.users.findUnique({ where: { Email: email } });
+    const existing = await prisma.users.findUnique({ where: { Email: normalizedEmail } });
+
     if (existing) return res.status(400).json({ message: 'Email already exists' });
 
     const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
@@ -421,8 +440,9 @@ export const createUser = async (req: Request, res: Response) => {
         data: {
           OrgId: orgId,
           Name: name,
-          Email: email,
+          Email: normalizedEmail,
           Phone: phone,
+
           Role: role,
           ParentId: parentId ? Number(parentId) : null,
           RouteId: routeId ? Number(routeId) : null
@@ -519,24 +539,86 @@ export const editProfile = async (req: Request, res: Response) => {
     const userId = Number(payload.userId || 0);
     if (!userId) return res.status(401).json({ message: 'Invalid userId' });
 
-    const { name, phone, profileImage } = req.body;
+    const { name, phone, address, password, email } = req.body;
     const file = (req as any).file;
 
-    let processedProfileImage = profileImage;
-    if (file && file.buffer) {
-      processedProfileImage = `data:${file.mimetype};base64,${file.buffer.toString('base64')}`;
+    // 1. Update User info
+    const updateData: any = {};
+    if (name) updateData.Name = name;
+    if (phone) updateData.Phone = phone;
+    if (email) {
+      const existing = await prisma.users.findUnique({ where: { Email: email } });
+      if (existing && existing.UserId !== userId) {
+        return res.status(400).json({ message: 'Email already taken' });
+      }
+      updateData.Email = email;
+    }
+    if (file && file.filename) {
+      updateData.ProfileImage = file.filename;
     }
 
     const updated = await prisma.users.update({
       where: { UserId: userId },
-      data: {
-        ...(name ? { Name: name } : {}),
-        ...(phone ? { Phone: phone } : {}),
-        ...(processedProfileImage ? { ProfileImage: processedProfileImage } : {})
-      }
+      data: updateData
     });
 
-    return res.status(200).json({ message: 'Profile updated', user: updated });
+    // 2. If Admin, also update Organization details
+    if (isAdminUser(payload)) {
+      const orgId = Number(payload.orgId);
+      if (orgId) {
+        await prisma.organization.update({
+          where: { OrgId: orgId },
+          data: {
+            ...(name ? { Name: name } : {}),
+            ...(email ? { Email: email } : {}),
+            ...(phone ? { Phone: phone } : {}),
+            ...(address ? { Address: address } : {}),
+            ...(file && file.filename ? { Logo: file.filename } : {})
+          }
+        });
+      }
+    }
+
+
+    // 3. Update Password if provided
+    if (password) {
+      const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
+      await prisma.credentials.update({
+        where: { UserId: userId },
+        data: { PasswordHash: passwordHash }
+      });
+    }
+
+    // 4. Fetch the full updated user with all relationships to return
+    const user = await getUserFullData(updated.Email);
+    if (!user) return res.status(404).json({ message: 'User not found after update' });
+
+    const userForResponse = formatUserForResponse(user);
+
+    // Generate new token with updated information
+    const newToken = jwt.sign(
+      {
+        userId: userForResponse.id,
+        orgId: userForResponse.orgId,
+        role: userForResponse.role,
+        email: userForResponse.email,
+        name: userForResponse.name,
+        phone: userForResponse.phone,
+        address: userForResponse.address,
+        routeId: userForResponse.routeId,
+        busId: userForResponse.busId,
+        parentName: userForResponse.parentName,
+        routeName: userForResponse.routeName,
+        driverName: userForResponse.driverName,
+        driverPhone: userForResponse.driverPhone,
+        busNumber: userForResponse.busNumber,
+        children: userForResponse.children
+      },
+      JWT_SECRET as string,
+      { expiresIn: '30d' }
+    );
+
+    return res.status(200).json({ message: 'Profile updated', user: userForResponse, token: newToken });
   } catch (err: any) {
     return res.status(500).json({ message: 'Error updating profile', error: err.message });
   }
@@ -579,7 +661,28 @@ export const editUser = async (req: Request, res: Response) => {
       data: updateData
     });
 
-    return res.status(200).json({ message: 'User updated', user: updated });
+    const userToReturn = {
+      ...updated,
+      ProfileImage: updated.ProfileImage ? (() => {
+        try {
+          let pBuffer: Buffer;
+          if (Buffer.isBuffer(updated.ProfileImage)) {
+            pBuffer = updated.ProfileImage;
+          } else if (updated.ProfileImage instanceof Uint8Array) {
+            pBuffer = Buffer.from(updated.ProfileImage);
+          } else if (typeof updated.ProfileImage === 'object') {
+            pBuffer = Buffer.from(Object.values(updated.ProfileImage as any));
+          } else {
+            return null;
+          }
+          return `data:image/png;base64,${pBuffer.toString('base64')}`;
+        } catch (err) {
+          return null;
+        }
+      })() : null
+    };
+
+    return res.status(200).json({ message: 'User updated', user: userToReturn });
 
   } catch (err: any) {
     return res.status(500).json({ message: 'Error updating user', error: err.message });
@@ -785,6 +888,10 @@ export const markNotificationRead = async (req: Request, res: Response) => {
       WHERE "NotificationId" = ${notifId} AND "UserId" = ${userId}
     `;
 
+    // Sync across devices
+    io.to(`user-${userId}`).emit('notificationRead', { notificationId: notifId });
+
+
     return res.status(200).json({ message: 'Notification marked as read' });
   } catch (error: any) {
     console.error('markNotificationRead error:', error);
@@ -878,10 +985,8 @@ export const deleteNotification = async (req: Request, res: Response) => {
     const token = authHeader.split(' ')[1];
     const payload = jwt.verify(token as string, JWT_SECRET!) as any;
 
-    // Check if user is admin
-    if (!isAdminUser(payload)) {
-      return res.status(403).json({ message: 'Only admins can delete notifications' });
-    }
+    // Permission check moved lower to differentiate between own deletion and notice deletion
+
 
     const { notificationId } = req.params;
     if (!notificationId || isNaN(Number(notificationId))) {
@@ -889,8 +994,9 @@ export const deleteNotification = async (req: Request, res: Response) => {
     }
 
     const notificationIdNum = Number(notificationId);
+    const userId = Number(payload.userId);
 
-    // Fetch the notification first to check its type and message
+    // Fetch the notification first to check ownership and type
     const notificationToDelete = await prisma.notification.findUnique({
       where: { NotificationId: notificationIdNum }
     });
@@ -899,8 +1005,14 @@ export const deleteNotification = async (req: Request, res: Response) => {
       return res.status(404).json({ message: 'Notification not found' });
     }
 
-    if (notificationToDelete.Type === 'notice') {
-      // If it's a notice, delete all notices with the same message for this organization
+    // Permission check: Admin can delete anything, User can delete their own
+    const isAdmin = isAdminUser(payload);
+    if (!isAdmin && notificationToDelete.UserId !== userId) {
+      return res.status(403).json({ message: 'You do not have permission to delete this notification' });
+    }
+
+    if (isAdmin && notificationToDelete.Type === 'notice') {
+      // If it's a notice and deleted by admin, delete all notices for this organization
       const orgId = Number(payload.orgId);
       if (!orgId) {
         return res.status(400).json({ message: 'Organization context not found' });
@@ -942,13 +1054,14 @@ export const deleteNotification = async (req: Request, res: Response) => {
         });
       }
     } else {
-      // Delete a single non-notice notification
+      // Delete a single notification (either user deleting own, or admin deleting non-notice)
       await prisma.notification.delete({
         where: { NotificationId: notificationIdNum }
       });
 
       io.emit('notificationDeleted', { notificationId: notificationIdNum });
     }
+
 
     return res.status(200).json({ message: 'Notification deleted successfully' });
   } catch (error: any) {
