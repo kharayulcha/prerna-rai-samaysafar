@@ -11,6 +11,7 @@ import {
     getPaymentHistory,
     getPaymentStatus,
     initiatePayment,
+    khaltiCallback,
     verifyPayment,
 } from '../controller/paymentController.js';
 import catchAsync from '../utils/catchAsync.js';
@@ -22,17 +23,19 @@ router.get('/bills', catchAsync(getMyBills)); // GET /api/payments/bills
 router.get('/history', catchAsync(getPaymentHistory)); // GET /api/payments/history
 router.post('/initiate', catchAsync(initiatePayment)); // POST /api/payments/initiate
 
-// eSewa callbacks
+// eSewa & Khalti callbacks
 router.get('/esewa/success', catchAsync(esewaSuccess));
 router.get('/esewa/failure', catchAsync(esewaFailure));
+router.get('/khalti/callback', catchAsync(khaltiCallback));
+
 router.post('/verify', catchAsync(verifyPayment));
 router.get('/status/:paymentId', catchAsync(getPaymentStatus)); // GET /api/payments/status/:paymentId
 
 // Admin endpoints
 router.get('/admin/all', catchAsync(getAllPayments));
 router.get('/admin/routes', catchAsync(getAdminRoutes));
-router.post('/admin/generate', catchAsync(generateBills));
+router.post('/admin/generate-bills', catchAsync(generateBills));
 router.get('/admin/bills', catchAsync(getAdminBills));
-router.post('/receipt', catchAsync(generateReceiptPdf));
+router.get('/receipt/:paymentId', catchAsync(generateReceiptPdf));
 
 export default router;

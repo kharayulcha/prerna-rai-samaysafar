@@ -1,9 +1,12 @@
+// Re-triggering server restart to load new prisma client
 import type { Request, Response } from 'express';
 import jwt from 'jsonwebtoken';
 import { jsPDF } from 'jspdf';
 import { applyPlugin } from 'jspdf-autotable';
 import prisma from '../model/index.js';
 import { info, error as logError } from '../utils/logger.js';
+import { io } from '../app.js';
+
 applyPlugin(jsPDF);
 
 const JWT_SECRET = process.env.JWT_SECRET || 'samaysafar_secret_key';
@@ -15,10 +18,14 @@ const ESEWA_CONFIG = {
     // Test environment URLs
     paymentUrl: process.env.ESEWA_PAYMENT_URL || 'https://rc-epay.esewa.com.np/api/epay/main/v2/form',
     verifyUrl: process.env.ESEWA_VERIFY_URL || 'https://rc.esewa.com.np/mobile/transaction',
-    // Production URLs (uncomment when going live):
-    // paymentUrl: 'https://epay.esewa.com.np/api/epay/main/v2/form',
-    // verifyUrl: 'https://esewa.com.np/mobile/transaction',
 };
+
+// Khalti configuration
+const KHALTI_CONFIG = {
+    secretKey: process.env.KHALTI_SECRET_KEY || 'test_secret_key',
+    baseUrl: process.env.KHALTI_BASE_URL || 'https://dev.khalti.com/api/v2',
+};
+
 
 // Helper to get user from token
 const getUserFromToken = (req: Request): { userId: number; role: string } | null => {
@@ -94,21 +101,24 @@ export const getPaymentHistory = async (req: Request, res: Response) => {
 
 /**
  * POST /api/payments/initiate
- * Create a payment record and return eSewa payment parameters
- * Body: { billId: number }
+ * Create a payment record and return payment parameters (eSewa or Khalti)
+ * Body: { billId: number, provider: 'esewa' | 'khalti' }
  */
 export const initiatePayment = async (req: Request, res: Response) => {
     try {
         const user = getUserFromToken(req);
         if (!user) return res.status(401).json({ message: 'Unauthorized' });
 
-        const { billId } = req.body as any;
+        const { billId, provider = 'esewa' } = req.body as any;
         if (!billId) return res.status(400).json({ message: 'Missing billId' });
 
         // Fetch the bill
         const bill = await prisma.bill.findFirst({
             where: { BillId: Number(billId), ParentId: user.userId },
-            include: { student: { select: { Name: true } } },
+            include: { 
+                student: { select: { Name: true } },
+                parent: { select: { Name: true, Email: true, Phone: true } }
+            },
         });
 
         if (!bill) return res.status(404).json({ message: 'Bill not found' });
@@ -132,11 +142,57 @@ export const initiatePayment = async (req: Request, res: Response) => {
                 BillId: bill.BillId,
                 ParentId: user.userId,
                 Amount: remainingAmount,
-                Provider: 'esewa',
+                Provider: provider,
                 Status: 'pending',
                 TransactionId: `SS-${bill.BillId}-${Date.now()}`,
             },
         });
+
+        if (provider === 'khalti') {
+            const backendUrl = process.env.BACKEND_URL || `http://192.168.1.69:8000`;
+            const returnUrl = `${backendUrl}/api/payments/khalti/callback`;
+            const websiteUrl = process.env.FRONTEND_URL || `http://192.168.1.69:8081`;
+
+
+            const khaltiPayload = {
+                return_url: returnUrl,
+                website_url: websiteUrl,
+                amount: Math.round(remainingAmount * 100), // convert to paisa
+                purchase_order_id: payment.TransactionId,
+                purchase_order_name: `School Bus Fee - ${bill.student?.Name}`,
+                customer_info: {
+                    name: bill.parent?.Name || 'Parent',
+                    email: bill.parent?.Email || 'parent@example.com',
+                    phone: bill.parent?.Phone || '9800000000',
+                },
+            };
+
+            const response = await fetch(`${KHALTI_CONFIG.baseUrl}/epayment/initiate/`, {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Key ${KHALTI_CONFIG.secretKey}`,
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(khaltiPayload),
+            });
+
+            if (!response.ok) {
+                const errData = await response.json() as any;
+                throw new Error(errData.detail || 'Khalti initiation failed');
+            }
+
+            const khaltiData = await response.json() as any;
+
+            return res.status(200).json({
+                message: 'Khalti payment initiated',
+                payment,
+                khaltiConfig: {
+                    paymentUrl: khaltiData.payment_url,
+                    pidx: khaltiData.pidx,
+                },
+            });
+        }
+
 
         // Generate eSewa payment parameters
         // product_id is our unique transaction identifier
@@ -148,9 +204,10 @@ export const initiatePayment = async (req: Request, res: Response) => {
         const totalAmount = amount + taxAmount + serviceCharge + deliveryCharge;
 
         // The success/failure URLs that eSewa will redirect to
-        const backendUrl = process.env.BACKEND_URL || `http://192.168.1.69:8004`;
+        const backendUrl = process.env.BACKEND_URL || `http://192.168.1.69:8000`;
         const successUrl = `${backendUrl}/api/payments/esewa/success`;
         const failureUrl = `${backendUrl}/api/payments/esewa/failure`;
+
 
         const esewaParams = {
             amount: amount.toString(),
@@ -261,7 +318,29 @@ export const esewaSuccess = async (req: Request, res: Response) => {
                 });
             }
 
+            // Create a notification record for the parent
+            const billWithStudent = await prisma.bill.findUnique({
+                where: { BillId: payment.BillId },
+                include: { student: { select: { Name: true } } }
+            });
+
+            await prisma.notification.create({
+                data: {
+                    UserId: payment.ParentId,
+                    Type: 'payment_success',
+                    Message: `Payment of Rs. ${payment.Amount} for ${billWithStudent?.student?.Name || 'your child'} was successful!`,
+                }
+            });
+
+            // Emit real-time notification
+            io.to(`user-${payment.ParentId}`).emit('notification', {
+                type: 'payment_success',
+                message: `Payment of Rs. ${payment.Amount} for ${billWithStudent?.student?.Name || 'your child'} was successful!`,
+            });
+
+
             return res.send(generateRedirectHtml('success', 'Payment successful!', payment.PaymentId));
+
         } else {
             await prisma.payment.update({
                 where: { PaymentId: payment.PaymentId },
@@ -271,6 +350,94 @@ export const esewaSuccess = async (req: Request, res: Response) => {
         }
     } catch (error: any) {
         logError('eSewa success callback error:', error);
+        return res.send(generateRedirectHtml('error', 'Server error processing payment'));
+    }
+};
+
+/**
+ * GET /api/payments/khalti/callback
+ * Khalti redirects here after payment attempt
+ */
+export const khaltiCallback = async (req: Request, res: Response) => {
+    try {
+        const { pidx, status, amount, purchase_order_id, transaction_id } = req.query as any;
+
+        if (!pidx || status !== 'Completed') {
+            return res.send(generateRedirectHtml('failed', 'Payment was not completed'));
+        }
+
+        // Find the payment record
+        const payment = await prisma.payment.findFirst({
+            where: { TransactionId: purchase_order_id },
+        });
+
+        if (!payment) {
+            return res.send(generateRedirectHtml('error', 'Payment record not found'));
+        }
+
+        // Verify with Khalti API
+        const verified = await verifyKhaltiPayment(pidx);
+
+        if (verified) {
+            // Update payment record
+            await prisma.payment.update({
+                where: { PaymentId: payment.PaymentId },
+                data: {
+                    Status: 'completed',
+                    RefId: transaction_id || pidx,
+                    PaidAt: new Date(),
+                },
+            });
+
+            // Check if bill is fully paid
+            const allPayments = await prisma.payment.aggregate({
+                where: { BillId: payment.BillId, Status: 'completed' },
+                _sum: { Amount: true },
+            });
+
+            const bill = await prisma.bill.findUnique({
+                where: { BillId: payment.BillId },
+            });
+
+            if (bill && (allPayments._sum.Amount || 0) >= bill.Amount) {
+                await prisma.bill.update({
+                    where: { BillId: payment.BillId },
+                    data: { Status: 'paid' },
+                });
+            }
+
+            // Create a notification record for the parent
+            const billWithStudent = await prisma.bill.findUnique({
+                where: { BillId: payment.BillId },
+                include: { student: { select: { Name: true } } }
+            });
+
+            await prisma.notification.create({
+                data: {
+                    UserId: payment.ParentId,
+                    Type: 'payment_success',
+                    Message: `Payment of Rs. ${payment.Amount} for ${billWithStudent?.student?.Name || 'your child'} was successful!`,
+                }
+            });
+
+            // Emit real-time notification
+            io.to(`user-${payment.ParentId}`).emit('notification', {
+                type: 'payment_success',
+                message: `Payment of Rs. ${payment.Amount} for ${billWithStudent?.student?.Name || 'your child'} was successful!`,
+            });
+
+
+            return res.send(generateRedirectHtml('success', 'Payment successful!', payment.PaymentId));
+
+        } else {
+            await prisma.payment.update({
+                where: { PaymentId: payment.PaymentId },
+                data: { Status: 'verification_failed' },
+            });
+            return res.send(generateRedirectHtml('error', 'Payment verification failed'));
+        }
+    } catch (error: any) {
+        logError('Khalti callback error:', error);
         return res.send(generateRedirectHtml('error', 'Server error processing payment'));
     }
 };
@@ -288,6 +455,7 @@ export const esewaFailure = async (req: Request, res: Response) => {
         return res.send(generateRedirectHtml('error', 'Server error'));
     }
 };
+
 
 /**
  * POST /api/payments/verify
@@ -428,6 +596,7 @@ export const getAdminRoutes = async (req: Request, res: Response) => {
 
         const orgId = await getAdminOrgId(user.userId);
         if (!orgId) return res.status(403).json({ message: 'Not authorized' });
+        logError(`[PAYMENT] Fetching routes for OrgId: ${orgId}`);
 
         const routes = await prisma.route.findMany({
             where: { OrgId: orgId },
@@ -442,19 +611,11 @@ export const getAdminRoutes = async (req: Request, res: Response) => {
                     },
                 },
                 bills: {
-                    select: { BillId: true, Amount: true, Status: true, DueDate: true, StudentId: true },
-                    orderBy: { DueDate: 'desc' },
+                    select: { BillId: true, Status: true, Amount: true }
                 },
-                stops: {
-                    select: { StopId: true, Name: true, Latitude: true, Longitude: true, SequenceOrder: true },
-                    orderBy: { SequenceOrder: 'asc' },
-                },
+                stops: true,
                 _count: {
-                    select: {
-                        students: {
-                            where: { Role: 'student' }
-                        }
-                    }
+                    select: { students: true }
                 },
             },
             orderBy: { Name: 'asc' },
@@ -462,8 +623,12 @@ export const getAdminRoutes = async (req: Request, res: Response) => {
 
         return res.status(200).json({ routes });
     } catch (error: any) {
-        logError('Error fetching admin routes:', error);
-        return res.status(500).json({ message: 'Error fetching admin routes', error: error.message });
+        logError('Error fetching admin routes FULL ERROR:', error);
+        return res.status(500).json({ 
+            message: 'Error fetching admin routes', 
+            error: error.message,
+            stack: error.stack 
+        });
     }
 };
 
@@ -534,7 +699,31 @@ export const generateBills = async (req: Request, res: Response) => {
 
         const result = await prisma.bill.createMany({ data: billData });
 
+        // Add notifications for all parents
+        const uniqueParents = [...new Set(newStudents.map(s => s.ParentId!))];
+        for (const parentId of uniqueParents) {
+            // Group students per parent for a single notification if possible
+            const parentStudents = newStudents.filter(s => s.ParentId === parentId);
+            const studentNames = parentStudents.map(s => s.Name).join(", ");
+            
+            await prisma.notification.create({
+                data: {
+                    UserId: parentId,
+                    Type: 'bill_generated',
+                    Message: `A new bill of Rs. ${amount} has been generated for ${studentNames}`,
+                }
+            });
+
+            // Emit real-time notification
+            io.to(`user-${parentId}`).emit('notification', {
+              type: 'bill_generated',
+              message: `A new bill of Rs. ${amount} has been generated for ${studentNames}`,
+            });
+        }
+
+
         return res.status(201).json({
+
             message: 'The bill is generated successfully',
             count: result.count,
             skipped: alreadyBilledIds.size,
@@ -598,6 +787,28 @@ async function verifyEsewaPayment(transactionUuid: string, amount: number): Prom
         return false;
     }
 }
+
+// Khalti verification (Lookup)
+async function verifyKhaltiPayment(pidx: string): Promise<boolean> {
+    try {
+        const response = await fetch(`${KHALTI_CONFIG.baseUrl}/epayment/lookup/`, {
+            method: 'POST',
+            headers: {
+                'Authorization': `Key ${KHALTI_CONFIG.secretKey}`,
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ pidx }),
+        });
+
+        if (!response.ok) return false;
+        const data = await response.json() as any;
+        return data.status === 'Completed';
+    } catch (error) {
+        logError('Khalti verification error:', error);
+        return false;
+    }
+}
+
 
 function generateRedirectHtml(status: string, message: string, paymentId?: number): string {
     return `

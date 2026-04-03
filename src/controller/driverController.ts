@@ -376,7 +376,23 @@ export const listDrivers = async (req: Request, res: Response) => {
         routeName: routeName, // another variation
         BusNumber: driver.assignedBus?.BusNumber ?? '',
         busNumber: driver.assignedBus?.BusNumber ?? '',
-        ProfileImage: driver.ProfileImage
+        ProfileImage: driver.ProfileImage ? (() => {
+          try {
+            let pBuffer: Buffer;
+            if (Buffer.isBuffer(driver.ProfileImage)) {
+              pBuffer = driver.ProfileImage;
+            } else if (driver.ProfileImage instanceof Uint8Array) {
+              pBuffer = Buffer.from(driver.ProfileImage);
+            } else if (typeof driver.ProfileImage === 'object') {
+              pBuffer = Buffer.from(Object.values(driver.ProfileImage as any));
+            } else {
+              return null;
+            }
+            return `data:image/png;base64,${pBuffer.toString('base64')}`;
+          } catch (err) {
+            return null;
+          }
+        })() : null
       };
     });
 
@@ -427,9 +443,66 @@ export const getDriver = async (req: Request, res: Response) => {
     const driver = await prisma.users.findUnique({ where: { UserId: driverId } });
     if (!driver || driver.OrgId !== Number(orgId) || driver.Role !== 'driver') return res.status(404).json({ message: 'Driver not found' });
 
-    return res.status(200).json({ driver });
+    const driverToReturn = {
+      ...driver,
+      ProfileImage: driver.ProfileImage ? (() => {
+        try {
+          let pBuffer: Buffer;
+          if (Buffer.isBuffer(driver.ProfileImage)) {
+            pBuffer = driver.ProfileImage;
+          } else if (driver.ProfileImage instanceof Uint8Array) {
+            pBuffer = Buffer.from(driver.ProfileImage);
+          } else if (typeof driver.ProfileImage === 'object') {
+            pBuffer = Buffer.from(Object.values(driver.ProfileImage as any));
+          } else {
+            return null;
+          }
+          return `data:image/png;base64,${pBuffer.toString('base64')}`;
+        } catch (err) {
+          return null;
+        }
+      })() : null
+    };
+
+    return res.status(200).json({ driver: driverToReturn });
   } catch (error: any) {
     console.error('Error fetching driver:', error);
     return res.status(500).json({ message: 'Error fetching driver', error: error.message });
   }
 };
+
+/**
+ * Get Driver Assignment - GET /api/drivers/:id/assignment
+ * Returns the currently assigned routeId for the driver
+ */
+export const getDriverAssignment = async (req: Request, res: Response) => {
+  try {
+    const driverId = Number(req.params.id);
+    if (isNaN(driverId)) return res.status(400).json({ message: 'Invalid driver id' });
+
+    // Fetch driver and their assigned route
+    const driver = await prisma.users.findUnique({
+      where: { UserId: driverId },
+      include: {
+        assignedRoute: true,
+        assignedBus: true,
+      },
+    });
+
+    if (!driver || driver.Role?.toLowerCase() !== 'driver') {
+      return res.status(404).json({ message: 'Driver not found' });
+    }
+
+    return res.status(200).json({
+      userId: driver.UserId,
+      name: driver.Name,
+      routeId: driver.RouteId,
+      busId: driver.BusId,
+      routeName: driver.assignedRoute?.Name || null,
+      busNumber: driver.assignedBus?.BusNumber || null,
+    });
+  } catch (error: any) {
+    console.error('Error fetching driver assignment:', error);
+    return res.status(500).json({ message: 'Error fetching driver assignment', error: error.message });
+  }
+};
