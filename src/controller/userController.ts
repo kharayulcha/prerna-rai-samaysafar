@@ -268,8 +268,9 @@ function formatUserForResponse(user: any) {
   const getImageUrl = (filename: any) => {
     if (!filename || typeof filename !== 'string') return null;
     if (filename.startsWith('http') || filename.startsWith('data:')) return filename;
-    const baseUrl = process.env.BACKEND_URL || 'http://localhost:8000';
-    return `${baseUrl}/uploads/${filename}`;
+    
+    // Using a relative path so the frontend can prepend its own backend base URL
+    return `/uploads/${filename}`;
   };
 
 
@@ -663,23 +664,7 @@ export const editUser = async (req: Request, res: Response) => {
 
     const userToReturn = {
       ...updated,
-      ProfileImage: updated.ProfileImage ? (() => {
-        try {
-          let pBuffer: Buffer;
-          if (Buffer.isBuffer(updated.ProfileImage)) {
-            pBuffer = updated.ProfileImage;
-          } else if (updated.ProfileImage instanceof Uint8Array) {
-            pBuffer = Buffer.from(updated.ProfileImage);
-          } else if (typeof updated.ProfileImage === 'object') {
-            pBuffer = Buffer.from(Object.values(updated.ProfileImage as any));
-          } else {
-            return null;
-          }
-          return `data:image/png;base64,${pBuffer.toString('base64')}`;
-        } catch (err) {
-          return null;
-        }
-      })() : null
+      ProfileImage: updated.ProfileImage ? `/uploads/${updated.ProfileImage}` : null
     };
 
     return res.status(200).json({ message: 'User updated', user: userToReturn });

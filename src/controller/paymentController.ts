@@ -149,9 +149,9 @@ export const initiatePayment = async (req: Request, res: Response) => {
         });
 
         if (provider === 'khalti') {
-            const backendUrl = process.env.BACKEND_URL || `http://192.168.1.69:8000`;
+            const backendUrl = `${req.protocol}://${req.get('host')}`;
             const returnUrl = `${backendUrl}/api/payments/khalti/callback`;
-            const websiteUrl = process.env.FRONTEND_URL || `http://192.168.1.69:8081`;
+            const websiteUrl = req.get('origin') || `http://192.168.1.69:8081`;
 
 
             const khaltiPayload = {
@@ -204,7 +204,7 @@ export const initiatePayment = async (req: Request, res: Response) => {
         const totalAmount = amount + taxAmount + serviceCharge + deliveryCharge;
 
         // The success/failure URLs that eSewa will redirect to
-        const backendUrl = process.env.BACKEND_URL || `http://192.168.1.69:8000`;
+        const backendUrl = `${req.protocol}://${req.get('host')}`;
         const successUrl = `${backendUrl}/api/payments/esewa/success`;
         const failureUrl = `${backendUrl}/api/payments/esewa/failure`;
 

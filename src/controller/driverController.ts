@@ -376,23 +376,7 @@ export const listDrivers = async (req: Request, res: Response) => {
         routeName: routeName, // another variation
         BusNumber: driver.assignedBus?.BusNumber ?? '',
         busNumber: driver.assignedBus?.BusNumber ?? '',
-        ProfileImage: driver.ProfileImage ? (() => {
-          try {
-            let pBuffer: Buffer;
-            if (Buffer.isBuffer(driver.ProfileImage)) {
-              pBuffer = driver.ProfileImage;
-            } else if (driver.ProfileImage instanceof Uint8Array) {
-              pBuffer = Buffer.from(driver.ProfileImage);
-            } else if (typeof driver.ProfileImage === 'object') {
-              pBuffer = Buffer.from(Object.values(driver.ProfileImage as any));
-            } else {
-              return null;
-            }
-            return `data:image/png;base64,${pBuffer.toString('base64')}`;
-          } catch (err) {
-            return null;
-          }
-        })() : null
+        profileImage: driver.ProfileImage ? `/uploads/${driver.ProfileImage}` : null
       };
     });
 
@@ -445,23 +429,7 @@ export const getDriver = async (req: Request, res: Response) => {
 
     const driverToReturn = {
       ...driver,
-      ProfileImage: driver.ProfileImage ? (() => {
-        try {
-          let pBuffer: Buffer;
-          if (Buffer.isBuffer(driver.ProfileImage)) {
-            pBuffer = driver.ProfileImage;
-          } else if (driver.ProfileImage instanceof Uint8Array) {
-            pBuffer = Buffer.from(driver.ProfileImage);
-          } else if (typeof driver.ProfileImage === 'object') {
-            pBuffer = Buffer.from(Object.values(driver.ProfileImage as any));
-          } else {
-            return null;
-          }
-          return `data:image/png;base64,${pBuffer.toString('base64')}`;
-        } catch (err) {
-          return null;
-        }
-      })() : null
+      ProfileImage: driver.ProfileImage ? `/uploads/${driver.ProfileImage}` : null
     };
 
     return res.status(200).json({ driver: driverToReturn });
