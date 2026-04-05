@@ -10,14 +10,17 @@ if (!SMTP_USER || !SMTP_PASS) {
 
 // Create transporter with better error handling
 const transporter = nodemailer.createTransport({
-  service: 'gmail',
+  host: 'smtp.gmail.com',
+  port: 465,
+  secure: true, // true for port 465, false for other ports
   auth: {
     user: SMTP_USER,
     pass: SMTP_PASS,
   },
-  // Add connection timeout
-  connectionTimeout: 5000,
-  greetingTimeout: 5000,
+  // Increase timeouts for slower connections
+  connectionTimeout: 15000, 
+  greetingTimeout: 15000,
+  socketTimeout: 15000,
 });
 
 // Send OTP email
