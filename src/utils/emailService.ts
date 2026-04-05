@@ -2,6 +2,9 @@ import nodemailer from 'nodemailer';
 
 const SMTP_USER = process.env.SMTP_USER;
 const SMTP_PASS = process.env.SMTP_PASS;
+const SMTP_HOST = process.env.SMTP_HOST || 'smtp.gmail.com';
+const SMTP_PORT = Number(process.env.SMTP_PORT) || 465;
+const SMTP_SECURE = process.env.SMTP_SECURE === 'true' || SMTP_PORT === 465;
 
 if (!SMTP_USER || !SMTP_PASS) {
   console.warn('SMTP credentials not configured. Email sending will fail.');
@@ -10,9 +13,9 @@ if (!SMTP_USER || !SMTP_PASS) {
 
 // Create transporter with better error handling
 const transporter = nodemailer.createTransport({
-  host: 'smtp.gmail.com',
-  port: 465,
-  secure: true, // true for port 465, false for other ports
+  host: SMTP_HOST,
+  port: SMTP_PORT,
+  secure: SMTP_SECURE,
   auth: {
     user: SMTP_USER,
     pass: SMTP_PASS,
