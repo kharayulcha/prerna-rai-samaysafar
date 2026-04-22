@@ -135,7 +135,7 @@ export default function RegistrationScreen() {
 
       Alert.alert("Success", "Account verified successfully!");
       setShowOtp(false);
-      router.push("/home"); 
+      router.push("/login");
     } catch (err: any) {
       Alert.alert("Verification Error", err.message);
     } finally {

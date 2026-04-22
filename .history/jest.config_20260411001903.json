@@ -1,0 +1,22 @@
+{
+  "preset": "react-native",
+  "testEnvironment": "node",
+  "testMatch": [
+    "**/__tests__/**/*.test.js",
+    "**/?(*.)+(spec|test).js"
+  ],
+  "collectCoverageFrom": [
+    "app/**/*.{js,jsx,ts,tsx}",
+    "!**/node_modules/**",
+    "!**/.expo/**"
+  ],
+  "transformIgnorePatterns": [
+    "node_modules/(?!(react-native|@react-navigation|@react-native-community|expo|expo-router|expo-font|expo-splash-screen|@expo-vector-icons)/)"
+  ],
+  "testTimeout": 30000,
+  "bail": false,
+  "verbose": true,
+  "moduleNameMapper": {
+    "^@/(.*)$": "<rootDir>/app/$1"
+  }
+}

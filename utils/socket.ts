@@ -22,4 +22,15 @@ export const disconnectSocket = () => {
     }
 };
 
+export const onLocationUpdate = (callback: (data: any) => void) => {
+    socket.on("location-update", callback);
+    return () => {
+        socket.off("location-update", callback);
+    };
+};
+
+export const emitLocationUpdate = (data: any) => {
+    socket.emit("location-update", data);
+};
+
 export default socket;

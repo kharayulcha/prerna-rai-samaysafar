@@ -23,8 +23,7 @@ import Navigation from "../components/navigation";
 
 const PRIMARY_BLUE = "#4FA3FF";
 const DEEP_BLUE = "#165C9C";
-const API_BASE_URL =
-  process.env.EXPO_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
+const API_BASE_URL = process.env.EXPO_PUBLIC_API_BASE_URL;
 
 interface DriverItem {
   id: string;

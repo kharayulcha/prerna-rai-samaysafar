@@ -134,7 +134,11 @@ export default function GetStartedScreen() {
 
       {/* Bottom Actions */}
       <View style={styles.bottomSection}>
-        <Pressable style={styles.getStartedButton} onPress={handleGetStarted}>
+        <Pressable 
+          testID="getStartedButton"
+          style={styles.getStartedButton} 
+          onPress={handleGetStarted}
+        >
           <Text style={styles.getStartedText}>Get Started</Text>
         </Pressable>
 

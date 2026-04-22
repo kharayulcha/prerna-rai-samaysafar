@@ -1,0 +1,21 @@
+{
+  "testEnvironment": "node",
+  "testMatch": [
+    "**/jest_test/**/*.test.js",
+    "**/__tests__/**/*.test.js",
+    "**/?(*.)+(spec|test).js"
+  ],
+  "testPathIgnorePatterns": ["/node_modules/"],
+  "testTimeout": 30000,
+  "verbose": true,
+  "globals": {
+    "test": true,
+    "expect": true,
+    "describe": true,
+    "it": true,
+    "beforeAll": true,
+    "afterAll": true,
+    "beforeEach": true,
+    "afterEach": true
+  }
+}

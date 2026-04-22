@@ -53,7 +53,14 @@ export default function LoginScreen() {
 
       const text = await res.text();
       if (!res.ok) {
-        throw new Error(text || "Login failed");
+        let errorMsg = "Login failed";
+        try {
+          const errorData = JSON.parse(text);
+          errorMsg = errorData.message || errorData.error || errorMsg;
+        } catch {
+          errorMsg = text || errorMsg;
+        }
+        throw new Error(errorMsg);
       }
 
       let data: any = null;
@@ -84,7 +91,7 @@ export default function LoginScreen() {
 
       router.push("/dashboard");
     } catch (err: any) {
-      Alert.alert("Login failed", err.message ?? "Something went wrong.");
+      Alert.alert("Login Failed", err.message || "Something went wrong.");
     } finally {
       setLoading(false);
     }
@@ -136,6 +143,7 @@ export default function LoginScreen() {
               style={styles.inputIcon}
             />
             <TextInput
+              testID="emailInput"
               placeholder="you@example.com"
               keyboardType="email-address"
               autoCapitalize="none"
@@ -157,6 +165,7 @@ export default function LoginScreen() {
               style={styles.inputIcon}
             />
             <TextInput
+              testID="passwordInput"
               placeholder="••••••••"
               secureTextEntry={!passwordVisible}
               style={styles.input}
@@ -185,6 +194,7 @@ export default function LoginScreen() {
         </View>
 
         <Pressable
+          testID="loginButton"
           style={[styles.loginButton, loading && { opacity: 0.7 }]}
           onPress={handleLogin}
           disabled={loading}
