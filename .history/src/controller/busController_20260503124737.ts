@@ -131,21 +131,6 @@ export const editBus = async (req: Request, res: Response) => {
 
     const { busNumber, model } = req.body as any;
 
-    // If busNumber is being updated, check if it already exists in this organization
-    if (busNumber !== undefined) {
-      const duplicateBus = await prisma.bus.findFirst({
-        where: {
-          OrgId: orgId,
-          BusNumber: String(busNumber),
-          BusId: { not: busId }, // Exclude current bus from check
-        },
-      });
-
-      if (duplicateBus) {
-        return res.status(400).json({ message: `Bus with number ${busNumber} already exists in your organization` });
-      }
-    }
-
     const updated = await prisma.bus.update({
       where: { BusId: busId },
       data: {

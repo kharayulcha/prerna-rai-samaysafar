@@ -4,7 +4,7 @@ import jwt from 'jsonwebtoken';
 import { io } from '../app.js';
 import prisma from '../model/index.js';
 import { generateOTP, sendOTPEmail, sendPasswordResetOTPEmail, sendUserCredentialsEmail } from '../utils/emailService.js';
-import { info, error as logError, warn } from '../utils/logger.js';
+import { info, warn, error as logError } from '../utils/logger.js';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'samaysafar_secret_key';
 const OTP_EXPIRY_MINUTES = 10;
@@ -574,24 +574,11 @@ export const editProfile = async (req: Request, res: Response) => {
     if (name) updateData.Name = name;
     if (phone) updateData.Phone = phone;
     if (email) {
-      // Email format validation
-      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-      const normalizedEmail = email.toLowerCase().trim();
-      
-      if (!emailRegex.test(normalizedEmail)) {
-        return res.status(400).json({ message: 'Invalid email format' });
-      }
-
-      const existing = await prisma.users.findFirst({
-        where: {
-          Email: { equals: normalizedEmail, mode: 'insensitive' },
-          UserId: { not: userId }
-        }
-      });
-      if (existing) {
+      const existing = await prisma.users.findUnique({ where: { Email: email } });
+      if (existing && existing.UserId !== userId) {
         return res.status(400).json({ message: 'Email already taken' });
       }
-      updateData.Email = normalizedEmail;
+      updateData.Email = email;
     }
     if (file && file.filename) {
       updateData.ProfileImage = file.filename;

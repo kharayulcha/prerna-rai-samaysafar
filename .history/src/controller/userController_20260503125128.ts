@@ -593,6 +593,8 @@ export const editProfile = async (req: Request, res: Response) => {
       }
       updateData.Email = normalizedEmail;
     }
+      updateData.Email = email;
+    }
     if (file && file.filename) {
       updateData.ProfileImage = file.filename;
     }
