@@ -253,13 +253,25 @@ export const listBuses = async (req: Request, res: Response) => {
       include: {
         assignedUsers: {
           where: { Role: 'driver' },
-          select: { Name: true, Phone: true },
+          select: {
+            Name: true,
+            Phone: true,
+            RouteId: true,
+            assignedRoute: {
+              select: { RouteId: true, Name: true },
+            },
+            driverRoutes: {
+              where: { Status: 'active' },
+              include: {
+                route: { select: { RouteId: true, Name: true } },
+              },
+            },
+          },
         },
         routeAssignments: {
-          where: { Status: 'active' },
           include: {
             route: {
-              select: { Name: true },
+              select: { RouteId: true, Name: true },
             },
           },
         },
@@ -279,8 +291,26 @@ export const listBuses = async (req: Request, res: Response) => {
       let driverName = activeTrip?.driver?.Name || bus.assignedUsers[0]?.Name || 'Unassigned';
       let driverPhone = activeTrip?.driver?.Phone || bus.assignedUsers[0]?.Phone || '';
 
-      // 2. Determine route name (prefer live trip route, fallback to assigned route)
-      let routeName = activeTrip?.route?.Name || bus.routeAssignments[0]?.route?.Name || 'No Route';
+      // 2. Determine route info with multiple fallbacks
+      const activeAssignment = bus.routeAssignments.find((a) => a.Status === 'active') || bus.routeAssignments[0];
+      const assignedDriver = bus.assignedUsers[0] || null;
+      
+      // Priority order for route resolution:
+      // 1. Active trip route (highest priority - actively running)
+      // 2. Active/First bus route assignment (bus assigned to route)
+      // 3. Driver's assigned route (driver assigned to route)
+      // 4. Driver's active driver routes (driver route relationships)
+      const assignedRoute =
+        activeAssignment?.route ||
+        assignedDriver?.assignedRoute ||
+        assignedDriver?.driverRoutes[0]?.route ||
+        null;
+      
+      let routeName = activeTrip?.route?.Name || assignedRoute?.Name || 'No Route';
+      let routeId = activeTrip?.RouteId || activeAssignment?.RouteId || assignedDriver?.RouteId || assignedRoute?.RouteId || null;
+
+      // Debug log for verification
+      console.log(`Bus ${bus.BusNumber}: routeAssignments=${bus.routeAssignments.length}, assignedDriver=${!!assignedDriver}, routeName=${routeName}`);
 
       return {
         BusId: bus.BusId,
@@ -290,6 +320,7 @@ export const listBuses = async (req: Request, res: Response) => {
         DriverName: driverName,
         DriverPhone: driverPhone,
         RouteName: routeName,
+        RouteId: routeId,
         ActiveTrip: activeTrip ? {
           TripId: activeTrip.TripId,
           RouteId: activeTrip.RouteId,
@@ -373,10 +404,37 @@ export const getFleetStatus = async (req: Request, res: Response) => {
 
     if (!orgId) return res.status(400).json({ message: 'Organization context not found' });
 
-    // 1. Fetch all buses for the organization
+    // 1. Fetch all buses for the organization (include assigned drivers/routes for fallback)
     const buses = await prisma.bus.findMany({
       where: { OrgId: Number(orgId) },
       orderBy: { BusNumber: 'asc' },
+      include: {
+        assignedUsers: {
+          where: { Role: 'driver' },
+          select: {
+            Name: true,
+            Phone: true,
+            RouteId: true,
+            assignedRoute: {
+              select: { RouteId: true, Name: true },
+            },
+            driverRoutes: {
+              where: { Status: 'active' },
+              include: {
+                route: { select: { RouteId: true, Name: true } },
+              },
+            },
+          },
+        },
+        routeAssignments: {
+          where: { Status: 'active' },
+          include: {
+            route: {
+              select: { RouteId: true, Name: true },
+            },
+          },
+        },
+      },
     });
 
     // 2. Fetch all active trips for the organization
@@ -394,12 +452,27 @@ export const getFleetStatus = async (req: Request, res: Response) => {
     // 3. Map buses to include their current status and active trip info
     const fleetStatus = buses.map((bus) => {
       const activeTrip = activeTrips.find((t) => t.BusId === bus.BusId);
+      const assignedDriver = bus.assignedUsers[0] || null;
+      const assignedRoute =
+        bus.routeAssignments[0]?.route ||
+        assignedDriver?.assignedRoute ||
+        assignedDriver?.driverRoutes[0]?.route ||
+        null;
+
+      const driverName = activeTrip?.driver?.Name || assignedDriver?.Name || 'Unassigned';
+      const driverPhone = activeTrip?.driver?.Phone || assignedDriver?.Phone || '';
+      const routeName = activeTrip?.route?.Name || assignedRoute?.Name || 'No Route';
+      const routeId = activeTrip?.RouteId || assignedRoute?.RouteId || null;
 
       return {
         BusId: bus.BusId,
         BusNumber: bus.BusNumber,
         Model: bus.Model,
         Status: activeTrip ? 'active' : 'idle',
+        DriverName: driverName,
+        DriverPhone: driverPhone,
+        RouteId: routeId,
+        RouteName: routeName,
         ActiveTrip: activeTrip ? {
           TripId: activeTrip.TripId,
           RouteId: activeTrip.RouteId,
