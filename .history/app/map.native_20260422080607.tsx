@@ -6,13 +6,14 @@ import {
     ActivityIndicator,
     Alert,
     FlatList,
+    Platform,
     SafeAreaView,
     StyleSheet,
     Text,
     TouchableOpacity,
     View,
 } from "react-native";
-import MapView, { Marker, Polyline } from "react-native-maps";
+import ExpoMap, { Marker, Polyline } from "expo-maps";
 
 import Navigation from "../components/navigation";
 import socket, {
@@ -767,6 +768,7 @@ export default function MapScreen() {
             <MapView
               ref={mapRef}
               style={styles.map}
+              provider={Platform.OS === "android" ? PROVIDER_GOOGLE : undefined}
               initialRegion={
                 busLocation
                   ? {

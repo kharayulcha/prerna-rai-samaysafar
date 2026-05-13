@@ -59,7 +59,7 @@ export default function People() {
 
   const [isEditMode, setIsEditMode] = useState(false);
   const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
-    // Filter user like user ko name search garne 
+
   const filteredUsers = useMemo(() => {
     return users.filter((u) => {
       const s = search.toLowerCase();

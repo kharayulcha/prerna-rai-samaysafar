@@ -66,9 +66,9 @@ const getDistanceFromLatLonInKm = (lat1: number, lon1: number, lat2: number, lon
     const a =
         Math.sin(dLat / 2) * Math.sin(dLat / 2) +
         Math.cos(deg2rad(lat1)) * Math.cos(deg2rad(lat2)) *
-        Math.sin(dLon / 2) * Math.sin(dLon / 2);  
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)); 
-    return R * c;
+        Math.sin(dLon / 2) * Math.sin(dLon / 2); //earth ko dui ota point kati para xa
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)); //convert calculation into and angle distance
+    return R * c; //earth ko radius batw multiply garxa, 2 ota point ko bicha ko distance dinxa KM ma 
 };
 
 // Format scheduled time (HH:MM format from backend is already formatted)

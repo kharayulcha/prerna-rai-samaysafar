@@ -46,7 +46,6 @@ interface FleetMember {
   DriverName: string;
   DriverPhone: string;
   RouteName: string;
-  RouteId?: number | null;
   ActiveTrip?: {
     TripId: number;
     RouteId: number;
@@ -95,12 +94,11 @@ export default function FleetDashboard() {
   }, [pulseAnim]);
 
   // Tick every second for live "X ago" counter 
-  useEffect(() => {
     const t = setInterval(() => setTick((n) => n + 1), 1000);
     return () => clearInterval(t);
   }, []);
 
-  // Core fetch 
+  // ΓöÇΓöÇ Core fetch ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
   const fetchFleetStatus = useCallback(async (showLoading = true) => {
     if (showLoading) setLoading(true);
     try {
@@ -116,51 +114,36 @@ export default function FleetDashboard() {
       const data = await res.json();
       if (res.ok) {
         // Map the results to matching FleetMember interface
-        const buses = (data.buses ?? []).map((bus: any) => {
-          // Debug: Log what we're receiving
-          console.log('Bus data received:', {
-            BusNumber: bus.BusNumber,
-            DriverName: bus.DriverName,
-            RouteName: bus.RouteName,
-            RouteId: bus.RouteId,
-            assignedUsers: bus.assignedUsers,
-            routeAssignments: bus.routeAssignments,
-            trips: bus.trips
-          });
-          
-          return {
-            BusId: bus.BusId,
-            BusNumber: bus.BusNumber,
-            Model: bus.Model,
-            Status: bus.Status || "idle",
-            DriverName: bus.DriverName || (bus.assignedUsers?.[0]?.Name) || "Unassigned",
-            DriverPhone: bus.DriverPhone || (bus.assignedUsers?.[0]?.Phone) || "",
-            RouteName: bus.RouteName || (bus.routeAssignments?.[0]?.route?.Name) || "No Route",
-            RouteId: bus.RouteId || bus.routeAssignments?.[0]?.RouteId || null,
-            ActiveTrip: bus.ActiveTrip || null,
-          };
-        });
+        const buses = (data.buses ?? []).map((bus: any) => ({
+          BusId: bus.BusId,
+          BusNumber: bus.BusNumber,
+          Model: bus.Model,
+          Status: bus.Status || "idle",
+          DriverName: bus.DriverName || "Unassigned",
+          DriverPhone: bus.DriverPhone || "",
+          RouteName: bus.RouteName || "No Route",
+          ActiveTrip: bus.ActiveTrip || null,
+        }));
         setFleet(buses);
         setLastUpdated(new Date());
         setFetchError(null);
       }
-    } catch (error) {
+    } catch {
       // Silently handle network errors
-      console.error('Fleet fetch error:', error);
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
   }, []);
 
-  // 30-second poll 
+  // ΓöÇΓöÇ 30-second poll ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
   useEffect(() => {
     fetchFleetStatus();
     const interval = setInterval(() => fetchFleetStatus(false), 30000);
     return () => clearInterval(interval);
   }, [fetchFleetStatus]);
 
-  // Socket.IO instant updates on trip start/end 
+  // Socket.IO instant updates on trip start/end ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
   useEffect(() => {
     connectSocket();
 
@@ -192,7 +175,7 @@ export default function FleetDashboard() {
     [fleet],
   );
 
-  //Loading 
+  // ΓöÇΓöÇ Loading ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
   if (loading && !refreshing) {
     return (
       <SafeAreaView style={styles.container}>
@@ -204,10 +187,10 @@ export default function FleetDashboard() {
     );
   }
 
-  // Main UI 
+  // ΓöÇΓöÇ Main UI ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
   return (
     <SafeAreaView style={styles.container}>
-      {/* Header*/}
+      {/* ΓöÇΓöÇ Header ΓöÇΓöÇ */}
       <View style={styles.header}>
         <TouchableOpacity onPress={() => router.back()} style={styles.iconBtn}>
           <Ionicons name="arrow-back" size={22} color={TEXT_DARK} />
@@ -265,7 +248,7 @@ export default function FleetDashboard() {
           </View>
         </LinearGradient>
 
-        {/*Section Title */}
+        {/* ΓöÇΓöÇ Section Title ΓöÇΓöÇ */}
         <View style={styles.sectionRow}>
           <Text style={styles.sectionTitle}>Vehicle Status</Text>
           <Text style={styles.vehicleCount}>
@@ -273,7 +256,7 @@ export default function FleetDashboard() {
           </Text>
         </View>
 
-        {/* Fleet Cards */}
+        {/* ΓöÇΓöÇ Fleet Cards ΓöÇΓöÇ */}
         {fleet.length === 0 ? (
           <View style={styles.emptyWrapper}>
             <View style={styles.emptyIcon}>
@@ -311,7 +294,7 @@ export default function FleetDashboard() {
   );
 }
 
-//  Sub-components 
+// ΓöÇΓöÇ Sub-components ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 function SummaryPill({
   label,
@@ -463,7 +446,7 @@ function TripDetail({
   );
 }
 
-//Styles 
+// ΓöÇΓöÇ Styles ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#F1F5F9" },

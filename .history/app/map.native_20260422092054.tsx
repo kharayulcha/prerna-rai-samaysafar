@@ -10,7 +10,7 @@ import {
     StyleSheet,
     Text,
     TouchableOpacity,
-    View,
+    View
 } from "react-native";
 import MapView, { Marker, Polyline } from "react-native-maps";
 
@@ -764,7 +764,7 @@ export default function MapScreen() {
         ) : (
           /* Map View */
           <>
-            <MapView
+            <ExpoMap
               ref={mapRef}
               style={styles.map}
               initialRegion={
@@ -928,7 +928,7 @@ export default function MapScreen() {
                   </View>
                 </Marker>
               )}
-            </MapView>
+            </ExpoMap>
 
             {/* Map overlay buttons */}
             <View style={styles.mapOverlayButtons}>

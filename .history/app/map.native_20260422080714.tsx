@@ -6,13 +6,14 @@ import {
     ActivityIndicator,
     Alert,
     FlatList,
+    Platform,
     SafeAreaView,
     StyleSheet,
     Text,
     TouchableOpacity,
     View,
 } from "react-native";
-import MapView, { Marker, Polyline } from "react-native-maps";
+import ExpoMap, { Marker, Polyline } from "expo-maps";
 
 import Navigation from "../components/navigation";
 import socket, {
@@ -764,7 +765,7 @@ export default function MapScreen() {
         ) : (
           /* Map View */
           <>
-            <MapView
+            <ExpoMap
               ref={mapRef}
               style={styles.map}
               initialRegion={
@@ -928,7 +929,7 @@ export default function MapScreen() {
                   </View>
                 </Marker>
               )}
-            </MapView>
+            </ExpoMap>
 
             {/* Map overlay buttons */}
             <View style={styles.mapOverlayButtons}>

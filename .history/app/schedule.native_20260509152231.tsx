@@ -83,7 +83,7 @@ export default function Schedule() {
   const [placeResults, setPlaceResults] = useState<any[]>([]);
   const [searchingPlace, setSearchingPlace] = useState(false);
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const mapRef = useRef<typeof MapView | null>(null);
+  const mapRef = useRef<MapView | null>(null);
 
   const getStoredToken = useCallback(async () => {
     return await AsyncStorage.getItem("authToken");

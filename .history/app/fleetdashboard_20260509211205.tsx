@@ -46,7 +46,6 @@ interface FleetMember {
   DriverName: string;
   DriverPhone: string;
   RouteName: string;
-  RouteId?: number | null;
   ActiveTrip?: {
     TripId: number;
     RouteId: number;
@@ -122,7 +121,6 @@ export default function FleetDashboard() {
             BusNumber: bus.BusNumber,
             DriverName: bus.DriverName,
             RouteName: bus.RouteName,
-            RouteId: bus.RouteId,
             assignedUsers: bus.assignedUsers,
             routeAssignments: bus.routeAssignments,
             trips: bus.trips
@@ -136,7 +134,6 @@ export default function FleetDashboard() {
             DriverName: bus.DriverName || (bus.assignedUsers?.[0]?.Name) || "Unassigned",
             DriverPhone: bus.DriverPhone || (bus.assignedUsers?.[0]?.Phone) || "",
             RouteName: bus.RouteName || (bus.routeAssignments?.[0]?.route?.Name) || "No Route",
-            RouteId: bus.RouteId || bus.routeAssignments?.[0]?.RouteId || null,
             ActiveTrip: bus.ActiveTrip || null,
           };
         });

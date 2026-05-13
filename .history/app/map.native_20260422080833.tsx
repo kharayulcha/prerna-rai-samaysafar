@@ -1,5 +1,6 @@
 import { Ionicons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import ExpoMap, { Marker, Polyline } from "expo-maps";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -10,9 +11,8 @@ import {
     StyleSheet,
     Text,
     TouchableOpacity,
-    View,
+    View
 } from "react-native";
-import MapView, { Marker, Polyline } from "react-native-maps";
 
 import Navigation from "../components/navigation";
 import socket, {
@@ -764,7 +764,7 @@ export default function MapScreen() {
         ) : (
           /* Map View */
           <>
-            <MapView
+            <ExpoMap
               ref={mapRef}
               style={styles.map}
               initialRegion={
@@ -928,7 +928,7 @@ export default function MapScreen() {
                   </View>
                 </Marker>
               )}
-            </MapView>
+            </ExpoMap>
 
             {/* Map overlay buttons */}
             <View style={styles.mapOverlayButtons}>

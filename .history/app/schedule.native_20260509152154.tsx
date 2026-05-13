@@ -4,18 +4,18 @@ import DateTimePicker from "@react-native-community/datetimepicker";
 import * as Location from "expo-location";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
-  ActivityIndicator,
-  Alert,
-  FlatList,
-  Modal,
-  Platform,
-  SafeAreaView,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  View,
+    ActivityIndicator,
+    Alert,
+    FlatList,
+    Modal,
+    Platform,
+    SafeAreaView,
+    ScrollView,
+    StyleSheet,
+    Text,
+    TextInput,
+    TouchableOpacity,
+    View,
 } from "react-native";
 
 import Navigation from "../components/navigation";
@@ -83,7 +83,7 @@ export default function Schedule() {
   const [placeResults, setPlaceResults] = useState<any[]>([]);
   const [searchingPlace, setSearchingPlace] = useState(false);
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const mapRef = useRef<typeof MapView | null>(null);
+  const mapRef = useRef<MapView | null>(null);
 
   const getStoredToken = useCallback(async () => {
     return await AsyncStorage.getItem("authToken");
@@ -1239,8 +1239,7 @@ export default function Schedule() {
 
                 {landmarks.length === 0 && !showLandmarkForm && (
                   <Text style={styles.noLandmarkText}>
-                    No landmarks added yet. Tap &quot;Add&quot; to pinpoint
-                    stops.
+                    No landmarks added yet. Tap &quot;Add&quot; to pinpoint stops.
                   </Text>
                 )}
               </View>

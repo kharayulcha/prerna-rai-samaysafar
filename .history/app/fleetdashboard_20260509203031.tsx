@@ -46,7 +46,6 @@ interface FleetMember {
   DriverName: string;
   DriverPhone: string;
   RouteName: string;
-  RouteId?: number | null;
   ActiveTrip?: {
     TripId: number;
     RouteId: number;
@@ -116,37 +115,22 @@ export default function FleetDashboard() {
       const data = await res.json();
       if (res.ok) {
         // Map the results to matching FleetMember interface
-        const buses = (data.buses ?? []).map((bus: any) => {
-          // Debug: Log what we're receiving
-          console.log('Bus data received:', {
-            BusNumber: bus.BusNumber,
-            DriverName: bus.DriverName,
-            RouteName: bus.RouteName,
-            RouteId: bus.RouteId,
-            assignedUsers: bus.assignedUsers,
-            routeAssignments: bus.routeAssignments,
-            trips: bus.trips
-          });
-          
-          return {
-            BusId: bus.BusId,
-            BusNumber: bus.BusNumber,
-            Model: bus.Model,
-            Status: bus.Status || "idle",
-            DriverName: bus.DriverName || (bus.assignedUsers?.[0]?.Name) || "Unassigned",
-            DriverPhone: bus.DriverPhone || (bus.assignedUsers?.[0]?.Phone) || "",
-            RouteName: bus.RouteName || (bus.routeAssignments?.[0]?.route?.Name) || "No Route",
-            RouteId: bus.RouteId || bus.routeAssignments?.[0]?.RouteId || null,
-            ActiveTrip: bus.ActiveTrip || null,
-          };
-        });
+        const buses = (data.buses ?? []).map((bus: any) => ({
+          BusId: bus.BusId,
+          BusNumber: bus.BusNumber,
+          Model: bus.Model,
+          Status: bus.Status || "idle",
+          DriverName: bus.DriverName || "Unassigned",
+          DriverPhone: bus.DriverPhone || "",
+          RouteName: bus.RouteName || "No Route",
+          ActiveTrip: bus.ActiveTrip || null,
+        }));
         setFleet(buses);
         setLastUpdated(new Date());
         setFetchError(null);
       }
-    } catch (error) {
+    } catch {
       // Silently handle network errors
-      console.error('Fleet fetch error:', error);
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -161,7 +145,6 @@ export default function FleetDashboard() {
   }, [fetchFleetStatus]);
 
   // Socket.IO instant updates on trip start/end 
-  useEffect(() => {
     connectSocket();
 
     const handleNotification = (notif: { type: string }) => {
@@ -204,8 +187,7 @@ export default function FleetDashboard() {
     );
   }
 
-  // Main UI 
-  return (
+  // ΓöÇΓöÇ Main UI 
     <SafeAreaView style={styles.container}>
       {/* Header*/}
       <View style={styles.header}>

@@ -2,7 +2,7 @@ const API_BASE_URL = "https://prerna-rai-samaysafar.onrender.com";
 
 describe("Test 1 - Successful Login", () => {
   const email = "bayungraiprerna@gmail.com";
-  const password = "Expo5544#@";
+  const password = "pranish123";
 
   it("should login successfully with valid email and password", async () => {
     const loginData = { email, password };
